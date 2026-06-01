@@ -120,6 +120,7 @@ function buildMessages(payload) {
     `每个内容方面至少 ${MIN_OBJECTIVE_QUESTIONS_PER_ASPECT} 道客观题；所有内容方面未达标前，优先补齐未覆盖或题量不足的方面。`,
     "同一内容方面内的题目必须考察不同子点、不同边界、不同场景、不同混淆项或不同应用条件；不要只替换措辞生成相似题。",
     "所有内容方面都达到最低题量后，才允许优先回到薄弱内容方面继续出题；薄弱方面补题也必须换角度，不能重复历史题。",
+    "禁止输出空泛模板题，例如“关于某知识点的某阶段，下列说法是否正确：需要区分核心原理、适用边界和常见误区”。题干必须包含该知识点的具体概念、结构、过程、对比对象或应用场景。",
     "题型路径优先级：以客观题为主，通过足够多的判断题、单选题、多选题完成复盘；简答题只是可选的表达检查。",
     "除非本次动作是追问、换一题、我不会或主观题，否则新题必须使用“建议下一题型”。",
     "如果本次动作是切回客观题，必须生成 true_false、single_choice 或 multiple_choice，不能生成 short_answer。",
@@ -534,23 +535,21 @@ function applyMasteryGate(review, payload) {
   const nextAspect = chooseNextContentAspect(mergedHistory, coveragePlan);
   const nextType = chooseNextQuestionType(mergedHistory);
   const returnedQuestion = String(review.question || review.nextQuestion || "").trim();
-  const repeatedQuestion = (payload.currentQuestion && returnedQuestion === String(payload.currentQuestion).trim())
-    || isSimilarQuestion(returnedQuestion, mergedHistory);
-  const fallbackQuestion = `关于“${payload.topic}”的“${nextStage}”阶段，下列说法是否正确：在不同使用条件下，需要区分核心原理、适用边界和常见误区。`;
+  const repeatedQuestion = payload.currentQuestion && returnedQuestion === String(payload.currentQuestion).trim();
   const aspectCoveragePassedNow = coveragePlan.length >= MIN_CONTENT_ASPECTS_FOR_MASTERY
     && aspectStats.every((item) => item.count >= MIN_OBJECTIVE_QUESTIONS_PER_ASPECT);
   return {
     ...review,
     mastered: false,
     masterySummary: "",
-    question: repeatedQuestion ? fallbackQuestion : review.question,
-    nextQuestion: repeatedQuestion ? fallbackQuestion : review.nextQuestion || `请从“${nextStage}”角度继续说明：${payload.topic} 的关键点是什么？`,
-    questionType: repeatedQuestion ? "true_false" : review.questionType || nextType,
-    options: repeatedQuestion ? [{ id: "A", text: "正确" }, { id: "B", text: "错误" }] : review.options,
-    correctAnswer: repeatedQuestion ? ["A"] : review.correctAnswer,
-    knowledgeAspect: repeatedQuestion ? nextAspect || review.knowledgeAspect : review.knowledgeAspect,
+    question: review.question,
+    nextQuestion: review.nextQuestion || review.question,
+    questionType: review.questionType || nextType,
+    options: review.options,
+    correctAnswer: review.correctAnswer,
+    knowledgeAspect: nextAspect || review.knowledgeAspect,
     coveragePlan,
-    nextQuestionReason: review.nextQuestionReason || `还没有满足内容覆盖式复盘标准：每个内容方面至少 ${MIN_OBJECTIVE_QUESTIONS_PER_ASPECT} 道客观题、至少 ${MIN_CONTENT_ASPECTS_FOR_MASTERY} 个核心内容方面、正确率 ${Math.round(MIN_OBJECTIVE_ACCURACY_FOR_MASTERY * 100)}%。当前内容覆盖${aspectCoveragePassedNow ? "已达标，正在补薄弱方面" : "未达标，优先补齐未覆盖内容方面"}。`
+    nextQuestionReason: review.nextQuestionReason || `${repeatedQuestion ? "模型返回了与当前题相同的问题，下一轮会继续要求围绕不同子点出题。" : ""}还没有满足内容覆盖式复盘标准：每个内容方面至少 ${MIN_OBJECTIVE_QUESTIONS_PER_ASPECT} 道客观题、至少 ${MIN_CONTENT_ASPECTS_FOR_MASTERY} 个核心内容方面、正确率 ${Math.round(MIN_OBJECTIVE_ACCURACY_FOR_MASTERY * 100)}%。当前内容覆盖${aspectCoveragePassedNow ? "已达标，正在补薄弱方面" : "未达标，优先补齐未覆盖内容方面"}。`
   };
 }
 
