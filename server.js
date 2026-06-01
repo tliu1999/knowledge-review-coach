@@ -80,6 +80,8 @@ function buildMessages(payload) {
     : (payload.history || []);
   const nextQuestionType = payload.mode === "subjective"
     ? "short_answer"
+    : payload.mode === "objective"
+    ? chooseNextQuestionType(payload.history || [])
     : ["explain", "newQuestion", "followup"].includes(payload.mode)
     ? payload.questionType || chooseNextQuestionType(payload.history || [])
     : chooseNextQuestionType(historyForQuestionType);
@@ -90,7 +92,8 @@ function buildMessages(payload) {
     explain: "学习者表示不会，请先解释当前题，再给同阶段更基础的新题",
     newQuestion: "学习者想换一题，请保持同一阶段重新出题",
     followup: isFollowupChat ? "学习者对本题解析追问，请只回答追问，不生成新题" : "学习者想追问当前题，请围绕当前题给一个更聚焦的追问",
-    subjective: "学习者主动选择主观题，请出一道简答题检查表达、迁移和边界理解"
+    subjective: "学习者主动选择主观题，请出一道简答题检查表达、迁移和边界理解",
+    objective: "学习者想从简答题切回客观题，请按建议下一题型生成一道客观题"
   }[payload.mode] || "继续复习";
   const focusText = payload.reviewMode === "weak" && payload.focus
     ? [
@@ -110,6 +113,7 @@ function buildMessages(payload) {
     `每轮只出一道题。学习路径固定为：${REVIEW_STAGES.join(" → ")}。`,
     "题型路径优先级：以客观题为主，通过足够多的判断题、单选题、多选题完成复盘；简答题只是可选的表达检查。",
     "除非本次动作是追问、换一题、我不会或主观题，否则新题必须使用“建议下一题型”。",
+    "如果本次动作是切回客观题，必须生成 true_false、single_choice 或 multiple_choice，不能生成 short_answer。",
     "只有本次动作是主观题时，才允许主动生成 short_answer；普通复习流程必须保持客观题。",
     "questionType 只能是 true_false、single_choice、multiple_choice、short_answer。",
     "true_false 必须给两个选项：A 正确，B 错误。single_choice 只有一个正确答案。multiple_choice 可以有多个正确答案。short_answer 不需要 options 和 correctAnswer。",
@@ -406,7 +410,7 @@ function scoreObjectiveAnswer(review, payload) {
 }
 
 function applyMasteryGate(review, payload) {
-  if (payload.mode === "start" || payload.mode === "explain" || payload.mode === "newQuestion" || payload.mode === "followup" || payload.mode === "subjective") {
+  if (payload.mode === "start" || payload.mode === "explain" || payload.mode === "newQuestion" || payload.mode === "followup" || payload.mode === "subjective" || payload.mode === "objective") {
     return { ...review, mastered: false, masterySummary: "" };
   }
 
@@ -494,6 +498,26 @@ function normalizeReview(raw) {
   };
 }
 
+function ensureObjectiveQuestion(review, payload) {
+  if (payload.mode !== "objective" || OBJECTIVE_TYPES.includes(review.questionType)) {
+    return review;
+  }
+  const nextType = chooseNextQuestionType(payload.history || []);
+  const stage = payload.stage || review.stage || chooseNextStage(payload.history || []);
+  const question = `关于“${payload.topic}”的“${stage}”阶段，下列说法是否正确：它需要结合具体条件判断，不能只背一句固定结论。`;
+  return {
+    ...review,
+    mastered: false,
+    stage,
+    questionType: nextType === "single_choice" || nextType === "multiple_choice" ? "true_false" : nextType,
+    question,
+    nextQuestion: question,
+    options: [{ id: "A", text: "正确" }, { id: "B", text: "错误" }],
+    correctAnswer: ["A"],
+    nextQuestionReason: "用户从简答题切回客观题，先用判断题恢复客观识别节奏。"
+  };
+}
+
 async function callDeepSeek(payload) {
   if (!process.env.DEEPSEEK_API_KEY) {
     return {
@@ -550,7 +574,8 @@ async function callDeepSeek(payload) {
 
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content || "{}";
-  return applyMasteryGate(scoreObjectiveAnswer(normalizeReview(parseModelJson(content)), payload), payload);
+  const review = ensureObjectiveQuestion(scoreObjectiveAnswer(normalizeReview(parseModelJson(content)), payload), payload);
+  return applyMasteryGate(review, payload);
 }
 
 async function handleStatic(request, response) {
@@ -581,7 +606,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && request.url === "/api/review") {
     try {
       const payload = await readRequestJson(request);
-      if (!payload.topic || !["start", "answer", "explain", "newQuestion", "followup", "subjective"].includes(payload.mode)) {
+      if (!payload.topic || !["start", "answer", "explain", "newQuestion", "followup", "subjective", "objective"].includes(payload.mode)) {
         sendJson(response, 400, { error: "BAD_REQUEST" });
         return;
       }

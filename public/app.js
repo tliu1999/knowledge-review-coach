@@ -389,6 +389,7 @@ function setSessionLabels() {
   const stats = objectiveStats();
   objectiveLabel.textContent = `${stats.count}/${OBJECTIVE_TARGET} · ${stats.accuracy}%`;
   questionTypeLabel.textContent = questionTypeName(state.currentQuestionType);
+  subjectiveBtn.textContent = isObjectiveQuestion() ? "主观题" : "客观题";
 }
 
 function renderList(listEl, items, emptyText) {
@@ -869,6 +870,38 @@ async function requestSubjectiveQuestion() {
   }
 }
 
+async function requestObjectiveQuestion() {
+  if (!canAct()) {
+    return;
+  }
+  setBusy(true, "正在切回客观题...");
+  try {
+    const review = await requestReview({
+      mode: "objective",
+      topic: state.topic,
+      currentQuestion: state.currentQuestion,
+      stage: state.currentStage,
+      questionType: state.currentQuestionType,
+      history: state.history
+    });
+    applyReviewToQuestion(review);
+    feedbackPanel.hidden = true;
+    persistSession();
+    saveTopicSnapshot();
+    setBusy(false, "已切回客观题，请作答。");
+  } catch (error) {
+    setBusy(false, error.message);
+  }
+}
+
+function toggleQuestionMode() {
+  if (isObjectiveQuestion()) {
+    requestSubjectiveQuestion();
+  } else {
+    requestObjectiveQuestion();
+  }
+}
+
 async function askFollowupQuestion(question) {
   if (!state.awaitingNext || !state.lastReview || state.busy) {
     return;
@@ -1027,7 +1060,7 @@ followupBtn.addEventListener("click", () => {
   openFollowupMode();
 });
 
-subjectiveBtn.addEventListener("click", requestSubjectiveQuestion);
+subjectiveBtn.addEventListener("click", toggleQuestionMode);
 nextQuestionBtn.addEventListener("click", goToNextQuestion);
 endReviewBtn.addEventListener("click", endReview);
 resetBtn.addEventListener("click", resetSession);
