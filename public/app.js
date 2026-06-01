@@ -16,6 +16,10 @@ const state = {
   lastReview: null,
   lastAnsweredQuestion: "",
   lastAnsweredAnswer: "",
+  lastAnsweredQuestionType: "short_answer",
+  lastAnsweredOptions: [],
+  lastAnsweredCorrectAnswer: [],
+  lastAnsweredSelectedAnswerIds: [],
   pendingReview: null,
   awaitingNext: false,
   followupOpen: false,
@@ -129,6 +133,10 @@ function saveTopicSnapshot() {
     lastReview: state.lastReview,
     lastAnsweredQuestion: state.lastAnsweredQuestion,
     lastAnsweredAnswer: state.lastAnsweredAnswer,
+    lastAnsweredQuestionType: state.lastAnsweredQuestionType,
+    lastAnsweredOptions: state.lastAnsweredOptions,
+    lastAnsweredCorrectAnswer: state.lastAnsweredCorrectAnswer,
+    lastAnsweredSelectedAnswerIds: state.lastAnsweredSelectedAnswerIds,
     history: state.history,
     stats
   };
@@ -202,6 +210,10 @@ function persistSession() {
     lastReview: state.lastReview,
     lastAnsweredQuestion: state.lastAnsweredQuestion,
     lastAnsweredAnswer: state.lastAnsweredAnswer,
+    lastAnsweredQuestionType: state.lastAnsweredQuestionType,
+    lastAnsweredOptions: state.lastAnsweredOptions,
+    lastAnsweredCorrectAnswer: state.lastAnsweredCorrectAnswer,
+    lastAnsweredSelectedAnswerIds: state.lastAnsweredSelectedAnswerIds,
     pendingReview: state.pendingReview,
     awaitingNext: state.awaitingNext,
     followupMessages: state.followupMessages
@@ -227,6 +239,10 @@ function restoreSession() {
       lastReview: saved.lastReview || null,
       lastAnsweredQuestion: saved.lastAnsweredQuestion || "",
       lastAnsweredAnswer: saved.lastAnsweredAnswer || "",
+      lastAnsweredQuestionType: saved.lastAnsweredQuestionType || "short_answer",
+      lastAnsweredOptions: Array.isArray(saved.lastAnsweredOptions) ? saved.lastAnsweredOptions : [],
+      lastAnsweredCorrectAnswer: Array.isArray(saved.lastAnsweredCorrectAnswer) ? saved.lastAnsweredCorrectAnswer : [],
+      lastAnsweredSelectedAnswerIds: Array.isArray(saved.lastAnsweredSelectedAnswerIds) ? saved.lastAnsweredSelectedAnswerIds : [],
       pendingReview: saved.pendingReview || null,
       awaitingNext: Boolean(saved.awaitingNext),
       followupOpen: false,
@@ -425,10 +441,26 @@ function openFollowupMode() {
   followupInput.focus();
 }
 
+function restoreAnsweredQuestionView() {
+  if (!state.lastAnsweredQuestion) {
+    return;
+  }
+  state.currentQuestion = state.lastAnsweredQuestion;
+  state.currentQuestionType = state.lastAnsweredQuestionType || state.lastReview?.answeredQuestionType || state.currentQuestionType;
+  state.currentOptions = Array.isArray(state.lastAnsweredOptions) ? state.lastAnsweredOptions : [];
+  state.currentCorrectAnswer = Array.isArray(state.lastAnsweredCorrectAnswer) ? state.lastAnsweredCorrectAnswer : [];
+  state.selectedAnswerIds = Array.isArray(state.lastAnsweredSelectedAnswerIds) ? state.lastAnsweredSelectedAnswerIds : [];
+  questionText.textContent = state.lastAnsweredQuestion;
+  normalizeCurrentQuestionState();
+  renderOptions();
+  setSessionLabels();
+}
+
 function closeFollowupMode() {
   state.followupOpen = false;
   followupPanel.hidden = true;
   if (state.awaitingNext && state.lastReview) {
+    restoreAnsweredQuestionView();
     renderFeedback(state.lastReview);
   }
   setBusy(false, "已回到本题解析。可以继续追问、下一题或结束回顾。");
@@ -550,6 +582,7 @@ function renderRestoredSession() {
   questionText.textContent = state.currentQuestion || (state.mastered ? "这一知识点已达到当前掌握标准。" : "输入一个知识点后，我会先问第一题。");
   renderOptions();
   if (state.awaitingNext && state.lastReview) {
+    restoreAnsweredQuestionView();
     renderFeedback(state.lastReview);
   } else {
     feedbackPanel.hidden = true;
@@ -578,6 +611,12 @@ function applyReviewToQuestion(review) {
   state.pendingReview = null;
   state.followupOpen = false;
   state.followupMessages = [];
+  state.lastAnsweredQuestion = "";
+  state.lastAnsweredAnswer = "";
+  state.lastAnsweredQuestionType = "short_answer";
+  state.lastAnsweredOptions = [];
+  state.lastAnsweredCorrectAnswer = [];
+  state.lastAnsweredSelectedAnswerIds = [];
   followupPanel.hidden = true;
   state.currentStage = review.stage || state.currentStage;
   state.currentQuestionType = review.questionType || "short_answer";
@@ -610,6 +649,10 @@ async function startSession(topic, options = {}) {
     lastReview: null,
     lastAnsweredQuestion: "",
     lastAnsweredAnswer: "",
+    lastAnsweredQuestionType: "short_answer",
+    lastAnsweredOptions: [],
+    lastAnsweredCorrectAnswer: [],
+    lastAnsweredSelectedAnswerIds: [],
     pendingReview: null,
     awaitingNext: false,
     followupOpen: false,
@@ -671,6 +714,10 @@ async function submitAnswer(answer) {
     review.answeredAnswer = displayAnswer;
     state.lastAnsweredQuestion = question;
     state.lastAnsweredAnswer = displayAnswer;
+    state.lastAnsweredQuestionType = state.currentQuestionType;
+    state.lastAnsweredOptions = state.currentOptions.map((option) => ({ ...option }));
+    state.lastAnsweredCorrectAnswer = [...state.currentCorrectAnswer];
+    state.lastAnsweredSelectedAnswerIds = [...answerIds];
     state.history.push({ question, answer: displayAnswer, evaluation: review });
     state.lastReview = review;
     state.pendingReview = review;
@@ -757,9 +804,9 @@ async function askFollowupQuestion(question) {
       mode: "followup",
       topic: state.topic,
       currentQuestion: state.lastAnsweredQuestion || state.currentQuestion,
-      questionType: state.lastReview.answeredQuestionType || state.lastReview.questionType,
-      options: state.lastReview.options || state.currentOptions,
-      correctAnswer: state.lastReview.correctAnswer || state.currentCorrectAnswer,
+      questionType: state.lastAnsweredQuestionType || state.lastReview.answeredQuestionType || state.currentQuestionType,
+      options: state.lastAnsweredOptions.length ? state.lastAnsweredOptions : state.currentOptions,
+      correctAnswer: state.lastAnsweredCorrectAnswer.length ? state.lastAnsweredCorrectAnswer : state.currentCorrectAnswer,
       answer: state.lastAnsweredAnswer,
       followupQuestion: question,
       lastReview: {
@@ -814,6 +861,12 @@ function endReview() {
   state.selectedAnswerIds = [];
   state.followupOpen = false;
   state.followupMessages = [];
+  state.lastAnsweredQuestion = "";
+  state.lastAnsweredAnswer = "";
+  state.lastAnsweredQuestionType = "short_answer";
+  state.lastAnsweredOptions = [];
+  state.lastAnsweredCorrectAnswer = [];
+  state.lastAnsweredSelectedAnswerIds = [];
   questionText.textContent = `“${state.topic}”本轮回顾已结束。`;
   renderOptions();
   followupPanel.hidden = true;
@@ -838,6 +891,10 @@ function resetSession() {
     lastReview: null,
     lastAnsweredQuestion: "",
     lastAnsweredAnswer: "",
+    lastAnsweredQuestionType: "short_answer",
+    lastAnsweredOptions: [],
+    lastAnsweredCorrectAnswer: [],
+    lastAnsweredSelectedAnswerIds: [],
     pendingReview: null,
     awaitingNext: false,
     followupOpen: false,
