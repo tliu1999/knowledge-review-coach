@@ -332,6 +332,9 @@ function normalizeCurrentQuestionState() {
     state.currentCorrectAnswer = [];
     state.selectedAnswerIds = [];
   }
+  if (state.currentQuestionType === "multiple_choice" && state.currentCorrectAnswer.length === 1) {
+    state.currentQuestionType = "single_choice";
+  }
 }
 
 function hasAnswer() {
@@ -434,6 +437,7 @@ function setBusy(isBusy, message = "") {
 }
 
 function setSessionLabels() {
+  normalizeCurrentQuestionState();
   topicLabel.textContent = state.topic || "未开始";
   roundLabel.textContent = String(state.history.length);
   stageLabel.textContent = state.currentStage || "-";
