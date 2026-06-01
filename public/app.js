@@ -220,6 +220,60 @@ function persistSession() {
   }));
 }
 
+function idsFromAnswerText(answer) {
+  return String(answer || "")
+    .split(/[、,，\s]+/)
+    .map((item) => item.trim().toUpperCase())
+    .filter(Boolean);
+}
+
+function hydrateAnsweredSnapshotFromHistory() {
+  if (!state.awaitingNext) {
+    return;
+  }
+  const lastHistoryItem = state.history.at(-1);
+  const evaluation = state.lastReview || lastHistoryItem?.evaluation;
+  if (!evaluation) {
+    return;
+  }
+  const explanations = Array.isArray(evaluation.optionExplanations) ? evaluation.optionExplanations : [];
+  const answeredType = isObjectiveType(evaluation.answeredQuestionType)
+    ? evaluation.answeredQuestionType
+    : isObjectiveType(state.lastAnsweredQuestionType)
+      ? state.lastAnsweredQuestionType
+      : isObjectiveType(lastHistoryItem?.evaluation?.questionType)
+        ? lastHistoryItem.evaluation.questionType
+        : "";
+
+  state.lastReview = state.lastReview || evaluation;
+  state.lastAnsweredQuestion = state.lastAnsweredQuestion || evaluation.answeredQuestion || lastHistoryItem?.question || "";
+  state.lastAnsweredAnswer = state.lastAnsweredAnswer || evaluation.answeredAnswer || lastHistoryItem?.answer || "";
+
+  if (answeredType) {
+    state.lastAnsweredQuestionType = answeredType;
+  }
+  if (!state.lastAnsweredOptions.length && explanations.length) {
+    state.lastAnsweredOptions = explanations
+      .filter((item) => item.id && item.text)
+      .map((item) => ({ id: item.id, text: item.text }));
+  }
+  if (!state.lastAnsweredCorrectAnswer.length) {
+    const correctIds = evaluation.answerComparison?.correctIds;
+    state.lastAnsweredCorrectAnswer = Array.isArray(correctIds) && correctIds.length
+      ? correctIds
+      : explanations.filter((item) => item.isCorrect).map((item) => item.id).filter(Boolean);
+  }
+  if (!state.lastAnsweredSelectedAnswerIds.length) {
+    const selectedIds = evaluation.answerComparison?.selectedIds;
+    state.lastAnsweredSelectedAnswerIds = Array.isArray(selectedIds) && selectedIds.length
+      ? selectedIds
+      : explanations.filter((item) => item.wasSelected).map((item) => item.id).filter(Boolean);
+  }
+  if (!state.lastAnsweredSelectedAnswerIds.length) {
+    state.lastAnsweredSelectedAnswerIds = idsFromAnswerText(state.lastAnsweredAnswer);
+  }
+}
+
 function restoreSession() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
@@ -248,6 +302,7 @@ function restoreSession() {
       followupOpen: false,
       followupMessages: Array.isArray(saved.followupMessages) ? saved.followupMessages : []
     });
+    hydrateAnsweredSnapshotFromHistory();
     return true;
   } catch {
     return false;
@@ -258,8 +313,12 @@ function canAct() {
   return Boolean(state.currentQuestion && !state.busy && !state.mastered && !state.awaitingNext);
 }
 
+function isObjectiveType(type) {
+  return ["true_false", "single_choice", "multiple_choice"].includes(type);
+}
+
 function isObjectiveQuestion() {
-  return ["true_false", "single_choice", "multiple_choice"].includes(state.currentQuestionType);
+  return isObjectiveType(state.currentQuestionType);
 }
 
 function normalizeCurrentQuestionState() {
