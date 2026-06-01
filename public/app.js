@@ -361,6 +361,55 @@ function objectiveStats() {
   };
 }
 
+function masterySnapshot() {
+  const stats = objectiveStats();
+  const stages = [...new Set(state.history.map((item) => item.evaluation?.stage).filter(Boolean))];
+  const recentScores = state.history.slice(-3).map((item) => Number(item.evaluation?.score || 0));
+  const recentAverage = recentScores.length
+    ? Math.round(recentScores.reduce((sum, score) => sum + score, 0) / recentScores.length)
+    : 0;
+  const hasLowRecent = recentScores.some((score) => score < 75);
+  const latest = state.lastReview || state.history.at(-1)?.evaluation || {};
+  const hasOpenRisk = Boolean(latest.needsVerification)
+    || (latest.errorPoints || []).length > 0
+    || (latest.missingPoints || []).length > 1;
+  const objectiveProgress = Math.min(1, stats.count / OBJECTIVE_TARGET);
+  const accuracyProgress = Math.min(1, stats.accuracy / 85);
+  const stageProgress = Math.min(1, stages.length / 5);
+  const recentProgress = recentScores.length >= 3 && recentAverage >= 85 && !hasLowRecent ? 1 : Math.min(1, recentAverage / 85);
+  const progress = Math.round(((objectiveProgress + accuracyProgress + stageProgress + recentProgress) / 4) * 100);
+  return {
+    stats,
+    stages,
+    recentScores,
+    recentAverage,
+    hasLowRecent,
+    hasOpenRisk,
+    progress
+  };
+}
+
+function masteryStatusSentence() {
+  const snapshot = masterySnapshot();
+  const { stats, stages, recentScores, recentAverage, hasLowRecent, hasOpenRisk, progress } = snapshot;
+  const enoughObjective = stats.count >= OBJECTIVE_TARGET;
+  const enoughAccuracy = stats.accuracy >= 85;
+  const enoughStages = stages.length >= 5;
+  const stableRecent = recentScores.length >= 3 && recentAverage >= 85 && !hasLowRecent;
+  const ready = enoughObjective && enoughAccuracy && enoughStages && stableRecent && !hasOpenRisk;
+  if (state.mastered || ready) {
+    return "当前掌握情况：已达到掌握标准。";
+  }
+  const gaps = [];
+  if (!enoughObjective) gaps.push(`客观题 ${stats.count}/${OBJECTIVE_TARGET}`);
+  if (!enoughAccuracy) gaps.push(`正确率 ${stats.accuracy}%/85%`);
+  if (!enoughStages) gaps.push(`阶段覆盖 ${Math.min(stages.length, 5)}/5`);
+  if (recentScores.length < 3) gaps.push("最近表现样本不足");
+  else if (!stableRecent) gaps.push(`最近 3 轮均分 ${recentAverage}/85`);
+  if (hasOpenRisk) gaps.push("仍有错误风险");
+  return `当前掌握情况：约 ${progress}%，${gaps.join("，")}。`;
+}
+
 function setBusy(isBusy, message = "") {
   state.busy = isBusy;
   statusText.textContent = message;
@@ -815,7 +864,10 @@ async function submitAnswer(answer) {
     renderHistory();
     persistSession();
     saveTopicSnapshot();
-    setBusy(false, review.mastered ? "已达到掌握标准，可以结束回顾。" : "已显示解析。点击“下一题”继续，或点击“结束回顾”。");
+    const masterySentence = masteryStatusSentence();
+    setBusy(false, review.mastered
+      ? `已达到掌握标准，可以结束回顾。${masterySentence}`
+      : `已显示解析。点击“下一题”继续，或点击“结束回顾”。${masterySentence}`);
   } catch (error) {
     setBusy(false, error.message);
   }
