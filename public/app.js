@@ -313,6 +313,10 @@ function canAct() {
   return Boolean(state.currentQuestion && !state.busy && !state.mastered && !state.awaitingNext);
 }
 
+function canSwitchQuestionMode() {
+  return Boolean(state.topic && state.currentQuestion && !state.busy && !state.followupOpen && !state.mastered && !state.awaitingNext);
+}
+
 function isObjectiveType(type) {
   return ["true_false", "single_choice", "multiple_choice"].includes(type);
 }
@@ -371,7 +375,7 @@ function setBusy(isBusy, message = "") {
   dontKnowBtn.disabled = state.followupOpen || !canAct();
   newQuestionBtn.disabled = state.followupOpen || !canAct();
   followupBtn.disabled = isBusy || state.followupOpen || !state.awaitingNext || !state.lastReview;
-  subjectiveBtn.disabled = state.followupOpen || !canAct();
+  subjectiveBtn.disabled = !canSwitchQuestionMode();
   if (followupInput) {
     followupInput.disabled = isBusy;
   }
@@ -846,7 +850,7 @@ async function requestQuestionMode(mode, message) {
 }
 
 async function requestSubjectiveQuestion() {
-  if (!canAct()) {
+  if (!canSwitchQuestionMode()) {
     return;
   }
   setBusy(true, "正在生成主观题...");
@@ -871,7 +875,7 @@ async function requestSubjectiveQuestion() {
 }
 
 async function requestObjectiveQuestion() {
-  if (!canAct()) {
+  if (!canSwitchQuestionMode()) {
     return;
   }
   setBusy(true, "正在切回客观题...");
