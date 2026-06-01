@@ -601,17 +601,25 @@ function ensureObjectiveQuestion(review, payload) {
   }
   const nextType = chooseNextQuestionType(payload.history || []);
   const stage = payload.stage || review.stage || chooseNextStage(payload.history || []);
-  const question = `关于“${payload.topic}”的“${stage}”阶段，下列说法是否正确：它需要结合具体条件判断，不能只背一句固定结论。`;
+  const plan = getCoveragePlan(payload.history || []);
+  const aspect = chooseNextContentAspect(payload.history || [], plan) || review.knowledgeAspect || "核心内容";
+  const question = `在“${payload.topic}”的“${aspect}”方面，下列哪一项最能体现该知识点的关键判断？`;
   return {
     ...review,
     mastered: false,
     stage,
-    questionType: nextType === "single_choice" || nextType === "multiple_choice" ? "true_false" : nextType,
+    knowledgeAspect: aspect,
+    coveragePlan: plan.length ? plan : review.coveragePlan,
+    questionType: "single_choice",
     question,
     nextQuestion: question,
-    options: [{ id: "A", text: "正确" }, { id: "B", text: "错误" }],
+    options: [
+      { id: "A", text: `需要结合 ${aspect} 的具体结构、条件或任务目标判断。` },
+      { id: "B", text: `只要记住 ${payload.topic} 的名称，就能判断所有相关问题。` },
+      { id: "C", text: `该方面与输入、结构、任务目标和边界条件都无关。` }
+    ],
     correctAnswer: ["A"],
-    nextQuestionReason: "用户从简答题切回客观题，先用判断题恢复客观识别节奏。"
+    nextQuestionReason: "用户从简答题切回客观题，按当前内容覆盖计划生成客观题。"
   };
 }
 

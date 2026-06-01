@@ -1011,17 +1011,30 @@ async function askFollowupQuestion(question) {
   }
 }
 
-function goToNextQuestion() {
+async function goToNextQuestion() {
   if (!state.pendingReview || state.pendingReview.mastered) {
     return;
   }
-  applyReviewToQuestion(state.pendingReview);
-  feedbackPanel.hidden = true;
-  followupPanel.hidden = true;
-  persistSession();
-  saveTopicSnapshot();
-  setBusy(false, "请回答当前问题。");
-  answerInput.focus();
+  setBusy(true, "正在按内容覆盖策略生成下一题...");
+  try {
+    const review = await requestReview({
+      mode: "objective",
+      topic: state.topic,
+      currentQuestion: state.lastAnsweredQuestion || state.currentQuestion,
+      stage: state.currentStage,
+      questionType: state.currentQuestionType,
+      history: state.history
+    });
+    applyReviewToQuestion(review);
+    feedbackPanel.hidden = true;
+    followupPanel.hidden = true;
+    persistSession();
+    saveTopicSnapshot();
+    setBusy(false, "请回答当前问题。");
+    answerInput.focus();
+  } catch (error) {
+    setBusy(false, error.message);
+  }
 }
 
 function endReview() {
