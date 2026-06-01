@@ -628,7 +628,7 @@ function closeFollowupMode() {
     restoreAnsweredQuestionView();
     renderFeedback(state.lastReview);
   }
-  setBusy(false, "已回到本题解析。可以继续追问、下一题或结束回顾。");
+  setBusy(false, `已回到本题解析。可以继续追问、下一题或结束回顾。${masteryStatusSentence()}`);
 }
 
 function deriveAnswerComparison(review) {
