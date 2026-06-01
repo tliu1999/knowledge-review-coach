@@ -366,9 +366,27 @@ function objectiveStats() {
   };
 }
 
+function aspectStats() {
+  const objective = state.history.filter((item) => ["true_false", "single_choice", "multiple_choice"].includes(item.evaluation?.answeredQuestionType || item.evaluation?.questionType));
+  const aspectMap = new Map();
+  objective.forEach((item) => {
+    const aspect = item.evaluation?.knowledgeAspect || "未标注方面";
+    const current = aspectMap.get(aspect) || { aspect, count: 0, correct: 0 };
+    current.count += 1;
+    if (item.evaluation?.objectiveCorrect) {
+      current.correct += 1;
+    }
+    aspectMap.set(aspect, current);
+  });
+  return [...aspectMap.values()].map((item) => ({
+    ...item,
+    accuracy: item.count ? Math.round((item.correct / item.count) * 100) : 0
+  }));
+}
+
 function masterySnapshot() {
   const stats = objectiveStats();
-  const aspects = [...new Set(state.history.map((item) => item.evaluation?.knowledgeAspect).filter(Boolean))];
+  const aspects = aspectStats();
   const recentScores = state.history.slice(-3).map((item) => Number(item.evaluation?.score || 0));
   const recentAverage = recentScores.length
     ? Math.round(recentScores.reduce((sum, score) => sum + score, 0) / recentScores.length)
@@ -380,7 +398,8 @@ function masterySnapshot() {
     || (latest.missingPoints || []).length > 1;
   const objectiveProgress = Math.min(1, stats.count / OBJECTIVE_TARGET);
   const accuracyProgress = Math.min(1, stats.accuracy / 85);
-  const aspectProgress = Math.min(1, aspects.length / CONTENT_ASPECT_TARGET);
+  const enoughAspectCount = aspects.filter((item) => item.count >= STAGE_TARGET).length;
+  const aspectProgress = Math.min(1, enoughAspectCount / CONTENT_ASPECT_TARGET);
   const recentProgress = recentScores.length >= 3 && recentAverage >= 85 && !hasLowRecent ? 1 : Math.min(1, recentAverage / 85);
   const progress = Math.round(((objectiveProgress + accuracyProgress + aspectProgress + recentProgress) / 4) * 100);
   return {
@@ -399,16 +418,25 @@ function masteryStatusSentence() {
   const { stats, aspects, recentScores, recentAverage, hasLowRecent, hasOpenRisk, progress } = snapshot;
   const enoughObjective = stats.count >= OBJECTIVE_TARGET;
   const enoughAccuracy = stats.accuracy >= 85;
-  const enoughAspects = aspects.length >= CONTENT_ASPECT_TARGET;
+  const enoughAspectCount = aspects.filter((item) => item.count >= STAGE_TARGET).length;
+  const enoughAspects = enoughAspectCount >= CONTENT_ASPECT_TARGET;
   const stableRecent = recentScores.length >= 3 && recentAverage >= 85 && !hasLowRecent;
   const ready = enoughObjective && enoughAccuracy && enoughAspects && stableRecent && !hasOpenRisk;
   if (state.mastered || ready) {
     return "当前掌握情况：已达到掌握标准。";
   }
   const gaps = [];
-  if (!enoughObjective) gaps.push(`客观题 ${stats.count}/${OBJECTIVE_TARGET}`);
+  if (!enoughAspects) {
+    const weakAspects = aspects
+      .filter((item) => item.count < STAGE_TARGET)
+      .sort((a, b) => a.count - b.count)
+      .slice(0, 3)
+      .map((item) => `${item.aspect} ${item.count}/${STAGE_TARGET}`);
+    const aspectText = weakAspects.length ? `未达标：${weakAspects.join("、")}` : "尚未形成内容方面覆盖";
+    gaps.push(`内容方面达标 ${enoughAspectCount}/${CONTENT_ASPECT_TARGET}，${aspectText}`);
+  }
+  if (!enoughObjective) gaps.push(`总客观题 ${stats.count}/${OBJECTIVE_TARGET}`);
   if (!enoughAccuracy) gaps.push(`正确率 ${stats.accuracy}%/85%`);
-  if (!enoughAspects) gaps.push(`内容方面 ${Math.min(aspects.length, CONTENT_ASPECT_TARGET)}/${CONTENT_ASPECT_TARGET}，每方面至少 ${STAGE_TARGET} 题`);
   if (recentScores.length < 3) gaps.push("最近表现样本不足");
   else if (!stableRecent) gaps.push(`最近 3 轮均分 ${recentAverage}/85`);
   if (hasOpenRisk) gaps.push("仍有错误风险");
