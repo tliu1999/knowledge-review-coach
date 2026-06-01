@@ -445,11 +445,29 @@ function restoreAnsweredQuestionView() {
   if (!state.lastAnsweredQuestion) {
     return;
   }
+  const explanations = Array.isArray(state.lastReview?.optionExplanations) ? state.lastReview.optionExplanations : [];
+  const answeredType = ["true_false", "single_choice", "multiple_choice"].includes(state.lastReview?.answeredQuestionType)
+    ? state.lastReview.answeredQuestionType
+    : state.lastAnsweredQuestionType || state.currentQuestionType;
+  const fallbackOptions = explanations
+    .filter((item) => item.id && item.text)
+    .map((item) => ({ id: item.id, text: item.text }));
+  const fallbackCorrect = explanations
+    .filter((item) => item.isCorrect)
+    .map((item) => item.id);
+  const fallbackSelected = explanations
+    .filter((item) => item.wasSelected)
+    .map((item) => item.id);
+
   state.currentQuestion = state.lastAnsweredQuestion;
-  state.currentQuestionType = state.lastAnsweredQuestionType || state.lastReview?.answeredQuestionType || state.currentQuestionType;
-  state.currentOptions = Array.isArray(state.lastAnsweredOptions) ? state.lastAnsweredOptions : [];
-  state.currentCorrectAnswer = Array.isArray(state.lastAnsweredCorrectAnswer) ? state.lastAnsweredCorrectAnswer : [];
-  state.selectedAnswerIds = Array.isArray(state.lastAnsweredSelectedAnswerIds) ? state.lastAnsweredSelectedAnswerIds : [];
+  state.currentQuestionType = answeredType;
+  state.currentOptions = state.lastAnsweredOptions.length ? state.lastAnsweredOptions : fallbackOptions;
+  state.currentCorrectAnswer = state.lastAnsweredCorrectAnswer.length ? state.lastAnsweredCorrectAnswer : fallbackCorrect;
+  state.selectedAnswerIds = state.lastAnsweredSelectedAnswerIds.length ? state.lastAnsweredSelectedAnswerIds : fallbackSelected;
+  state.lastAnsweredQuestionType = state.currentQuestionType;
+  state.lastAnsweredOptions = state.currentOptions.map((option) => ({ ...option }));
+  state.lastAnsweredCorrectAnswer = [...state.currentCorrectAnswer];
+  state.lastAnsweredSelectedAnswerIds = [...state.selectedAnswerIds];
   questionText.textContent = state.lastAnsweredQuestion;
   normalizeCurrentQuestionState();
   renderOptions();
@@ -584,6 +602,8 @@ function renderRestoredSession() {
   if (state.awaitingNext && state.lastReview) {
     restoreAnsweredQuestionView();
     renderFeedback(state.lastReview);
+    persistSession();
+    saveTopicSnapshot();
   } else {
     feedbackPanel.hidden = true;
   }
