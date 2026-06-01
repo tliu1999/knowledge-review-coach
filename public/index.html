@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>知识回顾问答助手</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <aside class="side-panel" aria-label="复习控制台">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">Q</div>
+          <div>
+            <h1>知识回顾问答助手</h1>
+            <p>输入知识点，进入一题一答的回顾节奏。</p>
+          </div>
+        </div>
+
+        <form id="topicForm" class="topic-form" autocomplete="off">
+          <label for="topicInput">知识点关键词</label>
+          <div class="topic-row">
+            <input id="topicInput" name="topic" required placeholder="例如 dropout、反向传播、注意力机制" />
+            <button type="submit">开始</button>
+          </div>
+        </form>
+
+        <section class="settings" aria-label="复习状态">
+          <div>
+            <span>当前知识点</span>
+            <strong id="topicLabel">未开始</strong>
+          </div>
+          <div>
+            <span>轮次</span>
+            <strong id="roundLabel">0</strong>
+          </div>
+          <div>
+            <span>最近评分</span>
+            <strong id="scoreLabel">-</strong>
+          </div>
+          <div>
+            <span>当前阶段</span>
+            <strong id="stageLabel">-</strong>
+          </div>
+          <div>
+            <span>客观题进度</span>
+            <strong id="objectiveLabel">0/12</strong>
+          </div>
+        </section>
+
+        <div class="guardrail">
+          <strong>防幻觉约束</strong>
+          <p>评估必须列依据；不确定内容会标记需要核验；不会编造论文、链接或精确引用。</p>
+        </div>
+
+        <section class="topic-library" aria-label="最近回顾">
+          <div class="library-head">
+            <strong>最近回顾</strong>
+            <span id="topicLibraryCount">0 个</span>
+          </div>
+          <div id="topicLibraryList" class="topic-library-list"></div>
+          <p id="topicLibraryEmpty" class="library-empty">完成几轮答题后，这里会显示最近复习过的知识点。</p>
+        </section>
+      </aside>
+
+      <section class="review-workspace" aria-label="问答区">
+        <header class="workspace-head">
+          <div>
+            <p class="eyebrow">Review Loop</p>
+            <h2 id="sessionTitle">准备开始</h2>
+          </div>
+          <button id="resetBtn" class="icon-btn" type="button" title="重置会话" aria-label="重置会话">↺</button>
+        </header>
+
+        <section class="question-card" aria-live="polite">
+          <div class="question-meta">
+            <p class="card-label">当前问题</p>
+            <span id="questionTypeLabel">简答题</span>
+          </div>
+          <h3 id="questionText">输入一个知识点后，我会先问第一题。</h3>
+        </section>
+
+        <form id="answerForm" class="answer-form" autocomplete="off">
+          <label for="answerInput">你的回答</label>
+          <div id="optionList" class="option-list" hidden></div>
+          <textarea id="answerInput" name="answer" placeholder="先按自己的理解回答，不用追求完美。" disabled></textarea>
+          <div class="answer-actions">
+            <div class="primary-actions">
+              <button id="submitAnswerBtn" type="submit" disabled>提交回答</button>
+              <button id="nextQuestionBtn" class="ghost-btn" type="button" disabled>下一题</button>
+              <button id="endReviewBtn" class="ghost-btn" type="button" disabled>结束回顾</button>
+            </div>
+            <div class="secondary-actions">
+              <button id="dontKnowBtn" class="ghost-btn" type="button" disabled>我不会</button>
+              <button id="newQuestionBtn" class="ghost-btn" type="button" disabled>换一题</button>
+              <button id="followupBtn" class="ghost-btn" type="button" disabled>追问</button>
+              <button id="subjectiveBtn" class="ghost-btn" type="button" disabled>主观题</button>
+            </div>
+            <span id="statusText" role="status"></span>
+          </div>
+        </form>
+
+        <section id="feedbackPanel" class="feedback-panel" hidden>
+          <div class="feedback-topline">
+            <div>
+              <p class="card-label">本题解析</p>
+              <h3 id="verdictText"></h3>
+            </div>
+            <strong id="feedbackScore"></strong>
+          </div>
+
+          <div class="feedback-grid">
+            <article id="conclusionBlock" class="coach-card" hidden>
+              <h4>结论</h4>
+              <p id="conclusionText"></p>
+            </article>
+            <article>
+              <h4>关键依据</h4>
+              <ul id="basisList"></ul>
+            </article>
+            <article>
+              <h4>错误点</h4>
+              <ul id="errorList"></ul>
+            </article>
+          </div>
+
+          <article id="optionAnalysisBlock" class="note-block" hidden>
+            <h4>选项解析</h4>
+            <div id="optionAnalysisList" class="option-analysis-list"></div>
+          </article>
+
+          <article id="explanationBlock" class="note-block" hidden>
+            <h4>讲解</h4>
+            <p id="explanationText"></p>
+          </article>
+
+          <article id="correctionBlock" class="note-block" hidden>
+            <h4>纠正说明</h4>
+            <p id="correctionText"></p>
+          </article>
+
+          <article id="verificationBlock" class="note-block warning" hidden>
+            <h4>需要核验</h4>
+            <p id="verificationText"></p>
+          </article>
+
+          <article id="masteryBlock" class="note-block success" hidden>
+            <h4>已掌握</h4>
+            <p id="masteryText"></p>
+          </article>
+        </section>
+
+        <section id="followupPanel" class="followup-panel" hidden>
+          <div class="followup-head">
+            <div>
+              <p class="card-label">追问答疑</p>
+              <h3>围绕本题继续问</h3>
+            </div>
+            <button id="continueReviewBtn" class="ghost-btn" type="button">继续回顾</button>
+          </div>
+          <div id="followupMessages" class="followup-messages"></div>
+          <form id="followupForm" class="followup-form" autocomplete="off">
+            <label for="followupInput">你的追问</label>
+            <textarea id="followupInput" placeholder="例如：为什么 B 选项不对？这个概念和另一个概念有什么区别？"></textarea>
+            <button id="askFollowupBtn" type="submit">提问</button>
+          </form>
+        </section>
+
+        <section class="history-section">
+          <div class="history-head">
+            <p class="card-label">回顾记录</p>
+            <span id="historyCount">0 条</span>
+          </div>
+          <div id="historyList" class="history-list"></div>
+        </section>
+      </section>
+    </main>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
