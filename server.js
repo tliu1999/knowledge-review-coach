@@ -116,7 +116,7 @@ function buildMessages(payload) {
     "如果本次动作是切回客观题，必须生成 true_false、single_choice 或 multiple_choice，不能生成 short_answer。",
     "只有本次动作是主观题时，才允许主动生成 short_answer；普通复习流程必须保持客观题。",
     "questionType 只能是 true_false、single_choice、multiple_choice、short_answer。",
-    "true_false 必须给两个选项：A 正确，B 错误。single_choice 只有一个正确答案。multiple_choice 可以有多个正确答案。short_answer 不需要 options 和 correctAnswer。",
+    "true_false 必须给两个选项：A 正确，B 错误。single_choice 只有一个正确答案。multiple_choice 必须至少有两个正确答案。short_answer 不需要 options 和 correctAnswer。",
     "所有客观题必须提供 options 和 correctAnswer。correctAnswer 使用选项 id 数组，例如 [\"A\"] 或 [\"A\",\"C\"]。",
     "客观题选项必须清晰无争议，不要把正确性建立在不同教材或实现约定可能不同的表述上；如涉及实现约定，题干必须说明约定。",
     "如果本轮是重点回顾，题目应优先围绕薄弱阶段、错题、遗漏点和不确定内容，不要平均覆盖全部知识。",
@@ -240,6 +240,9 @@ function normalizeQuestionShape(raw) {
   const initialType = normalizeQuestionType(raw.questionType);
   const initialOptions = normalizeOptions(raw.options, initialType);
   const initialCorrectAnswer = initialType === "short_answer" ? [] : normalizeAnswerIds(raw.correctAnswer);
+  const normalizedType = initialType === "multiple_choice" && initialCorrectAnswer.length < 2
+    ? "single_choice"
+    : initialType;
 
   if (OBJECTIVE_TYPES.includes(initialType)) {
     const optionIds = new Set(initialOptions.map((option) => option.id));
@@ -259,7 +262,7 @@ function normalizeQuestionShape(raw) {
   }
 
   return {
-    questionType: initialType,
+    questionType: normalizedType,
     options: initialOptions,
     correctAnswer: initialCorrectAnswer
   };
