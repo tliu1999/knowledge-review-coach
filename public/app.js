@@ -1,6 +1,8 @@
 const STORAGE_KEY = "knowledge-review-coach-session";
 const TOPICS_KEY = "knowledge-review-coach-topics";
-const OBJECTIVE_TARGET = 30;
+const OBJECTIVE_TARGET = 60;
+const STAGE_TARGET = 10;
+const CONTENT_ASPECT_TARGET = 6;
 
 const state = {
   topic: "",
@@ -366,7 +368,7 @@ function objectiveStats() {
 
 function masterySnapshot() {
   const stats = objectiveStats();
-  const stages = [...new Set(state.history.map((item) => item.evaluation?.stage).filter(Boolean))];
+  const aspects = [...new Set(state.history.map((item) => item.evaluation?.knowledgeAspect).filter(Boolean))];
   const recentScores = state.history.slice(-3).map((item) => Number(item.evaluation?.score || 0));
   const recentAverage = recentScores.length
     ? Math.round(recentScores.reduce((sum, score) => sum + score, 0) / recentScores.length)
@@ -378,12 +380,12 @@ function masterySnapshot() {
     || (latest.missingPoints || []).length > 1;
   const objectiveProgress = Math.min(1, stats.count / OBJECTIVE_TARGET);
   const accuracyProgress = Math.min(1, stats.accuracy / 85);
-  const stageProgress = Math.min(1, stages.length / 5);
+  const aspectProgress = Math.min(1, aspects.length / CONTENT_ASPECT_TARGET);
   const recentProgress = recentScores.length >= 3 && recentAverage >= 85 && !hasLowRecent ? 1 : Math.min(1, recentAverage / 85);
-  const progress = Math.round(((objectiveProgress + accuracyProgress + stageProgress + recentProgress) / 4) * 100);
+  const progress = Math.round(((objectiveProgress + accuracyProgress + aspectProgress + recentProgress) / 4) * 100);
   return {
     stats,
-    stages,
+    aspects,
     recentScores,
     recentAverage,
     hasLowRecent,
@@ -394,19 +396,19 @@ function masterySnapshot() {
 
 function masteryStatusSentence() {
   const snapshot = masterySnapshot();
-  const { stats, stages, recentScores, recentAverage, hasLowRecent, hasOpenRisk, progress } = snapshot;
+  const { stats, aspects, recentScores, recentAverage, hasLowRecent, hasOpenRisk, progress } = snapshot;
   const enoughObjective = stats.count >= OBJECTIVE_TARGET;
   const enoughAccuracy = stats.accuracy >= 85;
-  const enoughStages = stages.length >= 5;
+  const enoughAspects = aspects.length >= CONTENT_ASPECT_TARGET;
   const stableRecent = recentScores.length >= 3 && recentAverage >= 85 && !hasLowRecent;
-  const ready = enoughObjective && enoughAccuracy && enoughStages && stableRecent && !hasOpenRisk;
+  const ready = enoughObjective && enoughAccuracy && enoughAspects && stableRecent && !hasOpenRisk;
   if (state.mastered || ready) {
     return "当前掌握情况：已达到掌握标准。";
   }
   const gaps = [];
   if (!enoughObjective) gaps.push(`客观题 ${stats.count}/${OBJECTIVE_TARGET}`);
   if (!enoughAccuracy) gaps.push(`正确率 ${stats.accuracy}%/85%`);
-  if (!enoughStages) gaps.push(`阶段覆盖 ${Math.min(stages.length, 5)}/5`);
+  if (!enoughAspects) gaps.push(`内容方面 ${Math.min(aspects.length, CONTENT_ASPECT_TARGET)}/${CONTENT_ASPECT_TARGET}，每方面至少 ${STAGE_TARGET} 题`);
   if (recentScores.length < 3) gaps.push("最近表现样本不足");
   else if (!stableRecent) gaps.push(`最近 3 轮均分 ${recentAverage}/85`);
   if (hasOpenRisk) gaps.push("仍有错误风险");

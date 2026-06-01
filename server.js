@@ -28,9 +28,10 @@ const deepseekModel = process.env.DEEPSEEK_MODEL || "deepseek-chat";
 const REVIEW_STAGES = ["定义", "机制", "适用场景", "边界与误区", "对比概念", "实际应用"];
 const QUESTION_TYPES = ["true_false", "single_choice", "multiple_choice", "short_answer"];
 const OBJECTIVE_TYPES = ["true_false", "single_choice", "multiple_choice"];
-const MIN_OBJECTIVE_QUESTIONS_FOR_MASTERY = 30;
+const MIN_CONTENT_ASPECTS_FOR_MASTERY = 6;
+const MIN_OBJECTIVE_QUESTIONS_PER_ASPECT = 10;
+const MIN_OBJECTIVE_QUESTIONS_FOR_MASTERY = MIN_CONTENT_ASPECTS_FOR_MASTERY * MIN_OBJECTIVE_QUESTIONS_PER_ASPECT;
 const MIN_OBJECTIVE_ACCURACY_FOR_MASTERY = 0.85;
-const MIN_STAGE_COVERAGE_FOR_MASTERY = 5;
 const MAX_TOPIC_LENGTH = 80;
 const MAX_ANSWER_LENGTH = 5000;
 
@@ -69,12 +70,16 @@ function buildMessages(payload) {
       const answer = item.answer || "";
       const verdict = item.evaluation?.verdict || "未评估";
       const stage = item.evaluation?.stage || "未知阶段";
+      const aspect = item.evaluation?.knowledgeAspect || "未知内容方面";
       const type = item.evaluation?.questionType || "unknown";
-      return `第${index + 1}轮\n阶段：${stage}\n题型：${type}\n问题：${question}\n学习者回答：${answer}\n评估：${verdict}`;
+      return `第${index + 1}轮\n阶段：${stage}\n内容方面：${aspect}\n题型：${type}\n问题：${question}\n学习者回答：${answer}\n评估：${verdict}`;
     })
     .join("\n\n");
   const completedStages = getCoveredStages(payload.history || []);
   const nextStage = chooseNextStage(payload.history || []);
+  const coveragePlan = getCoveragePlan(payload.history || []);
+  const aspectStats = getAspectStats(payload.history || [], coveragePlan);
+  const nextContentAspect = chooseNextContentAspect(payload.history || [], coveragePlan);
   const historyForQuestionType = payload.mode === "answer"
     ? [...(payload.history || []), { evaluation: { questionType: payload.questionType, objectiveCorrect: true, score: 100 } }]
     : (payload.history || []);
@@ -111,6 +116,10 @@ function buildMessages(payload) {
     "除非用户明确要求来源，basis 不要写论文名、书名、作者、年份或链接；只写概念依据和推理依据。",
     "如果用户回答涉及你无法可靠判断的细节，把 needsVerification 设为 true，并说明需要核验什么。",
     `每轮只出一道题。学习路径固定为：${REVIEW_STAGES.join(" → ")}。`,
+    `覆盖策略：必须围绕“知识点本身”拆出完整内容方面清单 coveragePlan，而不是只按通用阶段覆盖。coveragePlan 应包含 ${MIN_CONTENT_ASPECTS_FOR_MASTERY} 到 12 个该知识点特有的核心方面。`,
+    `每个内容方面至少 ${MIN_OBJECTIVE_QUESTIONS_PER_ASPECT} 道客观题；所有内容方面未达标前，优先补齐未覆盖或题量不足的方面。`,
+    "同一内容方面内的题目必须考察不同子点、不同边界、不同场景、不同混淆项或不同应用条件；不要只替换措辞生成相似题。",
+    "所有内容方面都达到最低题量后，才允许优先回到薄弱内容方面继续出题；薄弱方面补题也必须换角度，不能重复历史题。",
     "题型路径优先级：以客观题为主，通过足够多的判断题、单选题、多选题完成复盘；简答题只是可选的表达检查。",
     "除非本次动作是追问、换一题、我不会或主观题，否则新题必须使用“建议下一题型”。",
     "如果本次动作是切回客观题，必须生成 true_false、single_choice 或 multiple_choice，不能生成 short_answer。",
@@ -137,6 +146,9 @@ function buildMessages(payload) {
     `本次动作：${actionLabel}`,
     `固定学习路径：${REVIEW_STAGES.join(" → ")}`,
     `已覆盖阶段：${completedStages.length ? completedStages.join("、") : "无"}`,
+    `当前内容覆盖计划：${coveragePlan.length ? coveragePlan.join("、") : "尚未建立，请先为该知识点拆出完整 coveragePlan"}`,
+    `内容方面覆盖统计：${aspectStats.length ? aspectStats.map((item) => `${item.aspect}=${item.count}/${MIN_OBJECTIVE_QUESTIONS_PER_ASPECT}题,弱点${item.weakCount}个,正确率${Math.round(item.accuracy * 100)}%`).join("；") : "无"}`,
+    `建议下一内容方面：${nextContentAspect || "请先建立 coveragePlan 并选择第一个核心方面"}`,
     `建议下一阶段：${payload.stage || nextStage}`,
     `建议下一题型：${nextQuestionType}`,
     payload.reviewMode ? `复习模式：${payload.reviewMode === "weak" ? "重点回顾薄弱处" : "全部重新回顾"}` : "",
@@ -156,6 +168,8 @@ function buildMessages(payload) {
     '  "mastered": false,',
     '  "score": 0,',
     '  "stage": "定义",',
+    '  "knowledgeAspect": "本题覆盖的知识点内容方面，例如：卷积窗口与局部特征",',
+    '  "coveragePlan": ["内容方面1", "内容方面2", "内容方面3"],',
     '  "questionType": "single_choice",',
     '  "question": "本轮要展示给学习者的问题",',
     '  "options": [{"id": "A", "text": "选项内容"}],',
@@ -294,9 +308,56 @@ function getCoveredStages(history) {
   )];
 }
 
+function getCoveragePlan(history) {
+  const latestPlan = [...history]
+    .reverse()
+    .find((item) => Array.isArray(item.evaluation?.coveragePlan) && item.evaluation.coveragePlan.length)?.evaluation.coveragePlan || [];
+  const aspects = history
+    .map((item) => item.evaluation?.knowledgeAspect)
+    .filter(Boolean);
+  return [...new Set([...latestPlan, ...aspects].map((item) => String(item).trim()).filter(Boolean))].slice(0, 12);
+}
+
+function getAspectStats(history, plan = getCoveragePlan(history)) {
+  return plan.map((aspect) => {
+    const items = history.filter((item) => item.evaluation?.knowledgeAspect === aspect);
+    const objective = items.filter((item) => OBJECTIVE_TYPES.includes(item.evaluation?.answeredQuestionType || item.evaluation?.questionType));
+    const weak = items.filter((item) => {
+      const evaluation = item.evaluation || {};
+      return Number(evaluation.score || 0) < 85
+        || evaluation.objectiveCorrect === false
+        || evaluation.needsVerification
+        || (evaluation.errorPoints || []).length > 0
+        || (evaluation.missingPoints || []).length > 1;
+    });
+    return {
+      aspect,
+      count: objective.length,
+      weakCount: weak.length,
+      accuracy: objective.length
+        ? objective.filter((item) => item.evaluation?.objectiveCorrect).length / objective.length
+        : 0
+    };
+  });
+}
+
 function chooseNextStage(history) {
   const covered = getCoveredStages(history);
   return REVIEW_STAGES.find((stage) => !covered.includes(stage)) || REVIEW_STAGES.at(-1);
+}
+
+function chooseNextContentAspect(history, plan = getCoveragePlan(history)) {
+  const aspectStats = getAspectStats(history, plan);
+  const uncovered = aspectStats
+    .filter((item) => item.count < MIN_OBJECTIVE_QUESTIONS_PER_ASPECT)
+    .sort((a, b) => a.count - b.count);
+  if (uncovered.length) {
+    return uncovered[0].aspect;
+  }
+  const weak = aspectStats
+    .filter((item) => item.weakCount > 0 || item.accuracy < MIN_OBJECTIVE_ACCURACY_FOR_MASTERY)
+    .sort((a, b) => b.weakCount - a.weakCount || a.accuracy - b.accuracy);
+  return weak[0]?.aspect || plan[0] || "";
 }
 
 function getObjectiveStats(history) {
@@ -312,6 +373,23 @@ function getObjectiveStats(history) {
 function chooseNextQuestionType(history) {
   const objectiveStats = getObjectiveStats(history);
   return OBJECTIVE_TYPES[objectiveStats.count % OBJECTIVE_TYPES.length];
+}
+
+function normalizeQuestionText(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[“”"'`，。！？、；：,.!?;:\s]/g, "");
+}
+
+function isSimilarQuestion(candidate, history) {
+  const normalized = normalizeQuestionText(candidate);
+  if (normalized.length < 8) {
+    return false;
+  }
+  return history.some((item) => {
+    const prior = normalizeQuestionText(item.question || item.evaluation?.question || "");
+    return prior && (prior === normalized || prior.includes(normalized) || normalized.includes(prior));
+  });
 }
 
 function average(values) {
@@ -421,16 +499,23 @@ function applyMasteryGate(review, payload) {
   const mergedHistory = [...prior, { evaluation: review }];
   const allScores = mergedHistory.map((item) => Number(item.evaluation?.score || 0));
   const recentAverage = average(allScores.slice(-3));
-  const coveredStages = new Set(getCoveredStages(mergedHistory));
+  const coveragePlan = getCoveragePlan(mergedHistory);
+  const aspectStats = getAspectStats(mergedHistory, coveragePlan);
   const objectiveStats = getObjectiveStats(mergedHistory);
   const hasRecentWeakAnswer = allScores.slice(-3).some((score) => score < 75);
   const hasOpenRisk = review.needsVerification || review.errorPoints.length > 0 || review.missingPoints.length > 1;
-  const objectiveMasteryPassed = objectiveStats.count >= MIN_OBJECTIVE_QUESTIONS_FOR_MASTERY
+  const requiredObjectiveCount = Math.max(
+    MIN_OBJECTIVE_QUESTIONS_FOR_MASTERY,
+    coveragePlan.length * MIN_OBJECTIVE_QUESTIONS_PER_ASPECT
+  );
+  const objectiveMasteryPassed = objectiveStats.count >= requiredObjectiveCount
     && objectiveStats.accuracy >= MIN_OBJECTIVE_ACCURACY_FOR_MASTERY;
-  const gatePassed = prior.length + 1 >= MIN_OBJECTIVE_QUESTIONS_FOR_MASTERY
+  const aspectCoveragePassed = coveragePlan.length >= MIN_CONTENT_ASPECTS_FOR_MASTERY
+    && aspectStats.every((item) => item.count >= MIN_OBJECTIVE_QUESTIONS_PER_ASPECT);
+  const gatePassed = prior.length + 1 >= requiredObjectiveCount
     && recentAverage >= 85
     && review.score >= 85
-    && coveredStages.size >= MIN_STAGE_COVERAGE_FOR_MASTERY
+    && aspectCoveragePassed
     && objectiveMasteryPassed
     && !hasRecentWeakAnswer
     && !hasOpenRisk;
@@ -441,15 +526,19 @@ function applyMasteryGate(review, payload) {
       mastered: true,
       nextQuestion: "",
       nextQuestionReason: "",
-      masterySummary: review.masterySummary || `你已经通过 ${objectiveStats.count} 道客观题覆盖了${[...coveredStages].join("、")}等关键层面，客观题正确率达到 ${Math.round(objectiveStats.accuracy * 100)}%，可以结束本轮复习。`
+      masterySummary: review.masterySummary || `你已经通过 ${objectiveStats.count} 道客观题覆盖了 ${coveragePlan.join("、")} 等内容方面，每个方面至少完成 ${MIN_OBJECTIVE_QUESTIONS_PER_ASPECT} 道客观题，客观题正确率达到 ${Math.round(objectiveStats.accuracy * 100)}%，可以结束本轮复习。`
     };
   }
 
   const nextStage = chooseNextStage(mergedHistory);
+  const nextAspect = chooseNextContentAspect(mergedHistory, coveragePlan);
   const nextType = chooseNextQuestionType(mergedHistory);
   const returnedQuestion = String(review.question || review.nextQuestion || "").trim();
-  const repeatedQuestion = payload.currentQuestion && returnedQuestion === String(payload.currentQuestion).trim();
-  const fallbackQuestion = `关于“${payload.topic}”的“${nextStage}”阶段，下列说法是否正确：它存在一个常见误区，需要结合具体条件判断。`;
+  const repeatedQuestion = (payload.currentQuestion && returnedQuestion === String(payload.currentQuestion).trim())
+    || isSimilarQuestion(returnedQuestion, mergedHistory);
+  const fallbackQuestion = `关于“${payload.topic}”的“${nextStage}”阶段，下列说法是否正确：在不同使用条件下，需要区分核心原理、适用边界和常见误区。`;
+  const aspectCoveragePassedNow = coveragePlan.length >= MIN_CONTENT_ASPECTS_FOR_MASTERY
+    && aspectStats.every((item) => item.count >= MIN_OBJECTIVE_QUESTIONS_PER_ASPECT);
   return {
     ...review,
     mastered: false,
@@ -459,7 +548,9 @@ function applyMasteryGate(review, payload) {
     questionType: repeatedQuestion ? "true_false" : review.questionType || nextType,
     options: repeatedQuestion ? [{ id: "A", text: "正确" }, { id: "B", text: "错误" }] : review.options,
     correctAnswer: repeatedQuestion ? ["A"] : review.correctAnswer,
-    nextQuestionReason: review.nextQuestionReason || `还没有满足足量客观题复盘标准：至少 ${MIN_OBJECTIVE_QUESTIONS_FOR_MASTERY} 道客观题、正确率 ${Math.round(MIN_OBJECTIVE_ACCURACY_FOR_MASTERY * 100)}%、覆盖 ${MIN_STAGE_COVERAGE_FOR_MASTERY} 个阶段。`
+    knowledgeAspect: repeatedQuestion ? nextAspect || review.knowledgeAspect : review.knowledgeAspect,
+    coveragePlan,
+    nextQuestionReason: review.nextQuestionReason || `还没有满足内容覆盖式复盘标准：每个内容方面至少 ${MIN_OBJECTIVE_QUESTIONS_PER_ASPECT} 道客观题、至少 ${MIN_CONTENT_ASPECTS_FOR_MASTERY} 个核心内容方面、正确率 ${Math.round(MIN_OBJECTIVE_ACCURACY_FOR_MASTERY * 100)}%。当前内容覆盖${aspectCoveragePassedNow ? "已达标，正在补薄弱方面" : "未达标，优先补齐未覆盖内容方面"}。`
   };
 }
 
@@ -467,11 +558,15 @@ function normalizeReview(raw) {
   const stage = REVIEW_STAGES.includes(raw.stage) ? raw.stage : "定义";
   const { questionType, options, correctAnswer } = normalizeQuestionShape(raw);
   const question = String(raw.question || raw.nextQuestion || "");
+  const coveragePlan = asList(raw.coveragePlan).slice(0, 12);
+  const knowledgeAspect = String(raw.knowledgeAspect || coveragePlan[0] || stage || "综合理解").trim();
   return {
     configurationMissing: Boolean(raw.configurationMissing),
     mastered: Boolean(raw.mastered),
     score: normalizeScore(raw.score),
     stage,
+    knowledgeAspect,
+    coveragePlan,
     answeredQuestionType: normalizeQuestionType(raw.answeredQuestionType),
     questionType,
     question,
@@ -528,6 +623,8 @@ async function callDeepSeek(payload) {
       mastered: false,
       score: 0,
       stage: chooseNextStage(payload.history || []),
+      knowledgeAspect: "基础概念",
+      coveragePlan: [],
       answeredQuestionType: payload.questionType || "short_answer",
       questionType: "short_answer",
       question: payload.mode === "start" ? `请先用一句话解释：${payload.topic} 是什么？` : "",
