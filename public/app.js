@@ -747,7 +747,7 @@ async function askFollowupQuestion(question) {
   if (!state.awaitingNext || !state.lastReview || state.busy) {
     return;
   }
-  state.followupMessages.push({ role: "user", content: question });
+  state.followupMessages = [{ role: "user", content: question }];
   renderFollowupMessages();
   followupInput.value = "";
   setBusy(true, "正在回答追问...");
@@ -773,12 +773,18 @@ async function askFollowupQuestion(question) {
       history: state.history
     });
     const answer = review.followupAnswer || review.explanation || review.questionAnalysis || "这次追问没有返回有效回答，请换一种问法再试。";
-    state.followupMessages.push({ role: "assistant", content: answer });
+    state.followupMessages = [
+      { role: "user", content: question },
+      { role: "assistant", content: answer }
+    ];
     renderFollowupMessages();
     persistSession();
     setBusy(false, "追问已回答。可以继续提问，或点“继续回顾”。");
   } catch (error) {
-    state.followupMessages.push({ role: "assistant", content: `追问回答失败：${error.message}` });
+    state.followupMessages = [
+      { role: "user", content: question },
+      { role: "assistant", content: `追问回答失败：${error.message}` }
+    ];
     renderFollowupMessages();
     setBusy(false, error.message);
   }
