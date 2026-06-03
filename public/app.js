@@ -36,7 +36,8 @@ const state = {
   aspectSubpoints: {},
   bankProgress: [],
   bankReady: false,
-  planningNote: ""
+  planningNote: "",
+  supplementBlocked: false
 };
 
 const topicForm = document.querySelector("#topicForm");
@@ -163,6 +164,7 @@ function saveTopicSnapshot() {
     aspectSubpoints: state.aspectSubpoints,
     bankReady: state.bankReady,
     planningNote: state.planningNote,
+    supplementBlocked: state.supplementBlocked,
     stats
   };
   const nextTopics = [topicRecord, ...topics.filter((item) => item.topic !== state.topic)].slice(0, 40);
@@ -250,7 +252,8 @@ function persistSession() {
     aspectSubpoints: state.aspectSubpoints,
     bankProgress: state.bankProgress,
     bankReady: state.bankReady,
-    planningNote: state.planningNote
+    planningNote: state.planningNote,
+    supplementBlocked: state.supplementBlocked
   }));
 }
 
@@ -341,7 +344,8 @@ function restoreSession() {
       aspectSubpoints: saved.aspectSubpoints && typeof saved.aspectSubpoints === "object" ? saved.aspectSubpoints : {},
       bankProgress: Array.isArray(saved.bankProgress) ? saved.bankProgress : [],
       bankReady: Boolean(saved.bankReady),
-      planningNote: saved.planningNote || ""
+      planningNote: saved.planningNote || "",
+      supplementBlocked: Boolean(saved.supplementBlocked)
     });
     hydrateAnsweredSnapshotFromHistory();
     return true;
@@ -532,7 +536,7 @@ function setBusy(isBusy, message = "") {
   });
   const totalTarget = Math.max(state.coveragePlan.length * BANK_QUESTIONS_PER_ASPECT, OBJECTIVE_TARGET);
   const hasNextQuestion = state.questionIndex < state.questionBank.length - 1;
-  const canSupplementBank = Boolean(state.topic && state.coveragePlan.length && state.questionBank.length < totalTarget);
+  const canSupplementBank = Boolean(state.topic && state.coveragePlan.length && state.questionBank.length < totalTarget && !state.supplementBlocked);
   nextQuestionBtn.disabled = isBusy || !state.awaitingNext || state.mastered || (!hasNextQuestion && !canSupplementBank);
   endReviewBtn.disabled = isBusy || !state.topic || state.history.length === 0;
   dontKnowBtn.disabled = state.followupOpen || !canAct();
@@ -919,6 +923,7 @@ function applyBankQuestion(question, index = state.questionIndex) {
   state.currentQuestion = question.question;
   state.lastReview = null;
   state.mastered = false;
+  state.supplementBlocked = false;
   answerInput.value = "";
   questionText.textContent = question.question;
   feedbackPanel.hidden = true;
@@ -1101,6 +1106,7 @@ async function supplementQuestionBank() {
     if (diverseQuestions.length) {
       state.questionBank.push(...diverseQuestions);
       addedCount += diverseQuestions.length;
+      state.supplementBlocked = false;
       const progressIndex = state.bankProgress.findIndex((item) => item.aspect === aspect);
       if (progressIndex >= 0) {
         state.bankProgress[progressIndex] = {
@@ -1335,7 +1341,8 @@ async function startSession(topic, options = {}) {
     aspectSubpoints: {},
     bankProgress: [],
     bankReady: false,
-    planningNote: ""
+    planningNote: "",
+    supplementBlocked: false
   });
   feedbackPanel.hidden = true;
   followupPanel.hidden = true;
@@ -1617,6 +1624,8 @@ async function goToNextQuestion() {
       const added = await supplementQuestionBank();
       if (!added) {
         const message = "当前题库已没有可用下一题，且暂时没有补到不相似新题。可以结束回顾，或重新开始生成题库。";
+        state.supplementBlocked = true;
+        persistSession();
         renderBankProgress({
           title: "暂时没有补到新题",
           detail: message,
@@ -1627,6 +1636,8 @@ async function goToNextQuestion() {
       }
     } catch (error) {
       const message = `补充下一题失败：${error.message}`;
+      state.supplementBlocked = true;
+      persistSession();
       renderBankProgress({
         title: "补题失败",
         detail: message,
@@ -1698,7 +1709,8 @@ function resetSession() {
     aspectSubpoints: {},
     bankProgress: [],
     bankReady: false,
-    planningNote: ""
+    planningNote: "",
+    supplementBlocked: false
   });
   localStorage.removeItem(STORAGE_KEY);
   topicInput.value = "";
