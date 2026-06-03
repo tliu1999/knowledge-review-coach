@@ -217,8 +217,8 @@ function parseModelJson(content) {
 
 function buildRepairJsonMessages(content, mode) {
   const expectedShape = mode === "bankQuestions"
-    ? '{ "questions": [ { "questionType": "single_choice", "question": "...", "options": [{"id":"A","text":"..."}], "correctAnswer": ["A"], "stage": "定义", "knowledgeAspect": "...", "basis": ["..."], "questionAnalysis": "...", "optionExplanations": [{"id":"A","explanation":"..."}] } ] }'
-    : '{ "coveragePlan": ["..."], "planningNote": "..." }';
+    ? '{ "questions": [ { "questionType": "single_choice", "question": "...", "options": [{"id":"A","text":"..."}], "correctAnswer": ["A"], "stage": "定义", "knowledgeAspect": "...", "focusSubpoint": "...", "basis": ["..."], "questionAnalysis": "...", "optionExplanations": [{"id":"A","explanation":"..."}] } ] }'
+    : '{ "contentAspects": [{"aspect": "...", "subpoints": ["..."]}], "coveragePlan": ["..."], "planningNote": "..." }';
   return [
     {
       role: "system",
@@ -251,10 +251,11 @@ function buildBankPlanMessages(payload) {
 
   const system = [
     "你是严谨的知识题库规划专家。",
-    "任务是把一个知识点拆成具体、完整、互不重复的内容方面，用于后续生成客观题题库。",
+    "任务是把一个知识点拆成具体、完整、互不重复的内容方面，并为每个内容方面继续拆出可出题的子点。",
     "内容方面必须是该知识点本身的教材级组成内容、原理、关键结构、适用条件、边界、常见混淆和典型应用。",
     "禁止使用空泛标签，例如：定义、机制、应用、边界、误区、阶段、核心原理、适用场景。",
     "每个内容方面必须带有该知识点的具体对象或概念，不得泛泛而谈。",
+    "每个内容方面必须给出 10 个不重复子点；子点要覆盖不同概念、步骤、条件、边界、混淆项或应用场景。",
     "不要编造论文、链接、作者、年份、精确指标。",
     "必须输出严格 JSON，不要 Markdown。"
   ].join("\n");
@@ -265,11 +266,12 @@ function buildBankPlanMessages(payload) {
     `请生成 ${BANK_ASPECT_COUNT} 个内容方面。`,
     "要求：",
     "1. 合起来能覆盖该关键词的完整核心知识，而不是只覆盖几个熟悉片段。",
-    "2. 方面之间不要重叠；每个方面后续都能生成 10 道不相似客观题。",
+    "2. 方面之间不要重叠；每个方面后续都能生成 10 道绑定不同子点的不相似客观题。",
     "3. 如果关键词有常见上下文差异，请把上下文差异作为独立内容方面体现。",
     "",
     "请按 JSON 输出：",
     "{",
+    '  "contentAspects": [{"aspect": "具体内容方面1", "subpoints": ["子点1", "子点2"]}],',
     '  "coveragePlan": ["具体内容方面1", "具体内容方面2"],',
     '  "planningNote": "一句话说明覆盖范围"',
     "}"
@@ -283,6 +285,9 @@ function buildBankPlanMessages(payload) {
 
 function buildBankQuestionsMessages(payload) {
   const existingQuestions = asList(payload.existingQuestions, 40).map((item, index) => `${index + 1}. ${item}`).join("\n");
+  const subpoints = asList(payload.subpointsForAspect, 20);
+  const usedSubpoints = new Set(asList(payload.existingSubpoints, 40));
+  const availableSubpoints = subpoints.filter((item) => !usedSubpoints.has(item));
   const aspectIndex = Number(payload.aspectIndex || 0) + 1;
   const questionCount = Math.max(1, Math.min(BANK_QUESTIONS_PER_ASPECT, Number(payload.questionCount || BANK_QUESTIONS_PER_BATCH)));
   const system = [
@@ -290,6 +295,7 @@ function buildBankQuestionsMessages(payload) {
     "任务是围绕指定知识点和指定内容方面生成客观题。",
     "题目必须考察具体概念、结构、过程、条件、对比、边界或应用判断，不能是空泛模板题。",
     "同一批题必须覆盖该内容方面内不同子点，不得只是替换措辞或重复同一判断。",
+    "每道题必须绑定一个 focusSubpoint；同一内容方面内不得重复使用同一个 focusSubpoint，除非所有子点都已经用完。",
     "题型只能是 true_false、single_choice、multiple_choice。",
     "true_false 必须给 A 正确、B 错误两个选项。",
     "single_choice 必须且只能有一个正确答案。",
@@ -303,11 +309,15 @@ function buildBankQuestionsMessages(payload) {
     `知识点：${payload.topic}`,
     `内容方面 ${aspectIndex}/${BANK_ASPECT_COUNT}：${payload.aspect}`,
     `完整内容方面清单：${asList(payload.coveragePlan, 16).join("、")}`,
+    subpoints.length ? `该内容方面完整子点清单：${subpoints.join("、")}` : "",
+    availableSubpoints.length ? `本批优先使用尚未覆盖子点：${availableSubpoints.join("、")}` : "",
+    usedSubpoints.size ? `已经覆盖过的子点，避免重复：${[...usedSubpoints].join("、")}` : "",
     existingQuestions ? `已生成题目，禁止重复或高度相似：\n${existingQuestions}` : "已生成题目：无",
     `请为该内容方面生成 ${questionCount} 道客观题。`,
     "题型分布建议：判断题、单选题、多选题都要有；多选题必须有至少两个正确选项。",
     "每题字段要求：",
     "- knowledgeAspect 必须等于当前内容方面。",
+    "- focusSubpoint 必须来自该内容方面子点清单，表示本题具体考察的子点。",
     "- question 必须包含具体知识内容，不能出现“某阶段”“需要区分核心原理、适用边界和常见误区”等泛化句式。",
     "- basis 写 1-2 条本题判分所需的概念依据。",
     "- questionAnalysis 写本题考察的重点、关键辨析和易错点。",
@@ -323,6 +333,7 @@ function buildBankQuestionsMessages(payload) {
     '      "correctAnswer": ["A"],',
     '      "stage": "定义",',
     '      "knowledgeAspect": "当前内容方面",',
+    '      "focusSubpoint": "当前内容方面下的具体子点",',
     '      "basis": ["依据1"],',
     '      "questionAnalysis": "本题考察什么、关键辨析是什么、容易错在哪里",',
     '      "optionExplanations": [{"id": "A", "explanation": "为什么正确或错误"}]',
@@ -429,12 +440,25 @@ function normalizeOptionExplanations(value) {
 }
 
 function normalizeBankPlan(raw) {
-  const coveragePlan = [...new Set(asList(raw.coveragePlan, 16)
+  const contentAspects = Array.isArray(raw.contentAspects) ? raw.contentAspects : [];
+  const aspectSubpoints = {};
+  const contentAspectNames = contentAspects
+    .map((item) => String(item?.aspect || "").trim())
+    .filter(Boolean);
+  contentAspects.forEach((item) => {
+    const aspect = String(item?.aspect || "").trim();
+    if (aspect) {
+      aspectSubpoints[aspect] = asList(item?.subpoints, BANK_QUESTIONS_PER_ASPECT)
+        .filter((subpoint) => subpoint.length >= 2);
+    }
+  });
+  const coveragePlan = [...new Set([...contentAspectNames, ...asList(raw.coveragePlan, 16)]
     .map((item) => item.replace(/^["“”']|["“”']$/g, "").trim())
     .filter((item) => item.length >= 3))]
     .slice(0, BANK_ASPECT_COUNT);
   return {
     coveragePlan,
+    aspectSubpoints,
     planningNote: String(raw.planningNote || "")
   };
 }
@@ -468,10 +492,12 @@ function normalizeBankQuestion(item, payload, index) {
   }
   const stage = REVIEW_STAGES.includes(item.stage) ? item.stage : REVIEW_STAGES[index % REVIEW_STAGES.length];
   const knowledgeAspect = String(item.knowledgeAspect || payload.aspect || "").trim();
+  const focusSubpoint = String(item.focusSubpoint || item.subpoint || "").trim();
   return {
     id: `${Date.now()}-${payload.aspectIndex || 0}-${index}`,
     stage,
     knowledgeAspect,
+    focusSubpoint,
     questionType,
     question,
     options,
@@ -488,18 +514,65 @@ function isGenericQuestion(question) {
     || question.includes("在不同使用条件下，需要区分");
 }
 
+function textTokens(value) {
+  const normalized = normalizeQuestionText(value);
+  if (!normalized) {
+    return [];
+  }
+  const chars = [...normalized];
+  const grams = [];
+  for (let index = 0; index < chars.length - 1; index += 1) {
+    grams.push(`${chars[index]}${chars[index + 1]}`);
+  }
+  return grams.length ? grams : chars;
+}
+
+function jaccardSimilarity(left, right) {
+  const a = new Set(textTokens(left));
+  const b = new Set(textTokens(right));
+  if (!a.size || !b.size) {
+    return 0;
+  }
+  const intersection = [...a].filter((item) => b.has(item)).length;
+  const union = new Set([...a, ...b]).size;
+  return intersection / union;
+}
+
+function isSimilarQuestionText(candidate, existingQuestions) {
+  const normalized = normalizeQuestionText(candidate);
+  return existingQuestions.some((existing) => {
+    const prior = normalizeQuestionText(existing);
+    if (!prior || !normalized) {
+      return false;
+    }
+    if (prior === normalized || prior.includes(normalized) || normalized.includes(prior)) {
+      return true;
+    }
+    return jaccardSimilarity(prior, normalized) >= 0.72;
+  });
+}
+
 function normalizeBankQuestions(raw, payload) {
   const source = Array.isArray(raw.questions) ? raw.questions : [];
   const seen = new Set();
+  const existingQuestions = asList(payload.existingQuestions, 80);
+  const existingSubpoints = new Set(asList(payload.existingSubpoints, 80));
+  const seenSubpoints = new Set(existingSubpoints);
   const questions = source
     .map((item, index) => normalizeBankQuestion(item, payload, index))
     .filter(Boolean)
     .filter((item) => {
       const key = normalizeQuestionText(item.question);
-      if (!key || seen.has(key)) {
+      if (!key || seen.has(key) || isSimilarQuestionText(item.question, [...existingQuestions, ...seen])) {
+        return false;
+      }
+      if (item.focusSubpoint && seenSubpoints.has(item.focusSubpoint)) {
         return false;
       }
       seen.add(key);
+      if (item.focusSubpoint) {
+        seenSubpoints.add(item.focusSubpoint);
+      }
       return true;
     })
     .slice(0, BANK_QUESTIONS_PER_ASPECT);

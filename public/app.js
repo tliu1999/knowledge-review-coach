@@ -31,6 +31,7 @@ const state = {
   questionBank: [],
   questionIndex: 0,
   coveragePlan: [],
+  aspectSubpoints: {},
   bankProgress: [],
   bankReady: false,
   planningNote: ""
@@ -157,6 +158,7 @@ function saveTopicSnapshot() {
     questionBank: state.questionBank,
     questionIndex: state.questionIndex,
     coveragePlan: state.coveragePlan,
+    aspectSubpoints: state.aspectSubpoints,
     bankReady: state.bankReady,
     planningNote: state.planningNote,
     stats
@@ -243,6 +245,7 @@ function persistSession() {
     questionBank: state.questionBank,
     questionIndex: state.questionIndex,
     coveragePlan: state.coveragePlan,
+    aspectSubpoints: state.aspectSubpoints,
     bankProgress: state.bankProgress,
     bankReady: state.bankReady,
     planningNote: state.planningNote
@@ -333,6 +336,7 @@ function restoreSession() {
       questionBank: Array.isArray(saved.questionBank) ? saved.questionBank : [],
       questionIndex: Number(saved.questionIndex || 0),
       coveragePlan: Array.isArray(saved.coveragePlan) ? saved.coveragePlan : [],
+      aspectSubpoints: saved.aspectSubpoints && typeof saved.aspectSubpoints === "object" ? saved.aspectSubpoints : {},
       bankProgress: Array.isArray(saved.bankProgress) ? saved.bankProgress : [],
       bankReady: Boolean(saved.bankReady),
       planningNote: saved.planningNote || ""
@@ -930,8 +934,65 @@ function normalizeClientBankQuestion(question) {
   return {
     ...question,
     questionType,
-    correctAnswer
+    correctAnswer,
+    focusSubpoint: String(question.focusSubpoint || question.subpoint || "").trim()
   };
+}
+
+function normalizedQuestionKey(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[“”"'`，。！？、；：,.!?;:\s]/g, "");
+}
+
+function questionTokens(value) {
+  const normalized = normalizedQuestionKey(value);
+  const chars = [...normalized];
+  if (chars.length < 2) {
+    return chars;
+  }
+  return chars.slice(0, -1).map((char, index) => `${char}${chars[index + 1]}`);
+}
+
+function questionSimilarity(left, right) {
+  const leftTokens = new Set(questionTokens(left));
+  const rightTokens = new Set(questionTokens(right));
+  if (!leftTokens.size || !rightTokens.size) {
+    return 0;
+  }
+  const intersection = [...leftTokens].filter((item) => rightTokens.has(item)).length;
+  const union = new Set([...leftTokens, ...rightTokens]).size;
+  return intersection / union;
+}
+
+function isSimilarToExistingQuestion(question, existingQuestions) {
+  const key = normalizedQuestionKey(question);
+  return existingQuestions.some((existing) => {
+    const prior = normalizedQuestionKey(existing);
+    return prior === key
+      || prior.includes(key)
+      || key.includes(prior)
+      || questionSimilarity(prior, key) >= 0.72;
+  });
+}
+
+function filterDiverseQuestions(questions, existingQuestions, existingSubpoints) {
+  const accepted = [];
+  const usedSubpoints = new Set(existingSubpoints.filter(Boolean));
+  for (const question of questions) {
+    const pool = [...existingQuestions, ...accepted.map((item) => item.question)];
+    if (isSimilarToExistingQuestion(question.question, pool)) {
+      continue;
+    }
+    if (question.focusSubpoint && usedSubpoints.has(question.focusSubpoint)) {
+      continue;
+    }
+    accepted.push(question);
+    if (question.focusSubpoint) {
+      usedSubpoints.add(question.focusSubpoint);
+    }
+  }
+  return accepted;
 }
 
 async function generateQuestionBank(topic, options = {}) {
@@ -949,6 +1010,7 @@ async function generateQuestionBank(topic, options = {}) {
     sourceHistory: options.sourceHistory || []
   });
   state.coveragePlan = Array.isArray(plan.coveragePlan) ? plan.coveragePlan : [];
+  state.aspectSubpoints = plan.aspectSubpoints && typeof plan.aspectSubpoints === "object" ? plan.aspectSubpoints : {};
   state.planningNote = plan.planningNote || "";
   state.bankProgress = state.coveragePlan.map((aspect) => ({ aspect, status: "pending", count: 0 }));
   if (!state.coveragePlan.length) {
@@ -958,6 +1020,7 @@ async function generateQuestionBank(topic, options = {}) {
   for (const [index, aspect] of state.coveragePlan.entries()) {
     state.bankProgress[index] = { aspect, status: "running", count: 0 };
     const aspectQuestions = [];
+    const subpointsForAspect = Array.isArray(state.aspectSubpoints[aspect]) ? state.aspectSubpoints[aspect] : [];
     for (let offset = 0; offset < BANK_QUESTIONS_PER_ASPECT; offset += BANK_QUESTIONS_PER_BATCH) {
       const batchNumber = Math.floor(offset / BANK_QUESTIONS_PER_BATCH) + 1;
       const batchTotal = Math.ceil(BANK_QUESTIONS_PER_ASPECT / BANK_QUESTIONS_PER_BATCH);
@@ -978,10 +1041,17 @@ async function generateQuestionBank(topic, options = {}) {
         reviewMode: options.reviewMode || "all",
         focus: options.focus || null,
         questionCount: BANK_QUESTIONS_PER_BATCH,
-        existingQuestions: [...bank, ...aspectQuestions].map((item) => item.question).slice(-40)
+        subpointsForAspect,
+        existingSubpoints: aspectQuestions.map((item) => item.focusSubpoint).filter(Boolean),
+        existingQuestions: [...bank, ...aspectQuestions].map((item) => item.question).slice(-60)
       });
       const questions = Array.isArray(result.questions) ? result.questions.map(normalizeClientBankQuestion) : [];
-      aspectQuestions.push(...questions);
+      const diverseQuestions = filterDiverseQuestions(
+        questions,
+        [...bank, ...aspectQuestions].map((item) => item.question),
+        aspectQuestions.map((item) => item.focusSubpoint)
+      );
+      aspectQuestions.push(...diverseQuestions);
       if (result.generationWarning) {
         setBusy(true, `${message}。有一批 JSON 修复失败，已跳过并继续。`);
       }
@@ -1005,10 +1075,16 @@ async function generateQuestionBank(topic, options = {}) {
         reviewMode: options.reviewMode || "all",
         focus: options.focus || null,
         questionCount: needed,
-        existingQuestions: [...bank, ...aspectQuestions].map((item) => item.question).slice(-40)
+        subpointsForAspect,
+        existingSubpoints: aspectQuestions.map((item) => item.focusSubpoint).filter(Boolean),
+        existingQuestions: [...bank, ...aspectQuestions].map((item) => item.question).slice(-60)
       });
       const questions = Array.isArray(result.questions) ? result.questions.map(normalizeClientBankQuestion) : [];
-      aspectQuestions.push(...questions);
+      aspectQuestions.push(...filterDiverseQuestions(
+        questions,
+        [...bank, ...aspectQuestions].map((item) => item.question),
+        aspectQuestions.map((item) => item.focusSubpoint)
+      ));
     }
     bank.push(...aspectQuestions.slice(0, BANK_QUESTIONS_PER_ASPECT));
     state.bankProgress[index] = { aspect, status: "done", count: aspectQuestions.length };
@@ -1065,6 +1141,7 @@ function evaluateObjectiveAnswer(question, answerIds) {
     score,
     stage: question.stage || state.currentStage || "-",
     knowledgeAspect: question.knowledgeAspect || "未标注方面",
+    focusSubpoint: question.focusSubpoint || "",
     coveragePlan: state.coveragePlan,
     answeredQuestionType: question.questionType,
     questionType: question.questionType,
@@ -1130,6 +1207,7 @@ async function startSession(topic, options = {}) {
     questionBank: [],
     questionIndex: 0,
     coveragePlan: [],
+    aspectSubpoints: {},
     bankProgress: [],
     bankReady: false,
     planningNote: ""
@@ -1468,6 +1546,7 @@ function resetSession() {
     questionBank: [],
     questionIndex: 0,
     coveragePlan: [],
+    aspectSubpoints: {},
     bankProgress: [],
     bankReady: false,
     planningNote: ""
