@@ -1049,74 +1049,124 @@ function supplementCandidates(allowExtra = false) {
   return candidates;
 }
 
+function mergeExpandedCoverage(plan) {
+  const incoming = Array.isArray(plan.coveragePlan) ? plan.coveragePlan : [];
+  const existing = new Set(state.coveragePlan);
+  const newAspects = incoming
+    .map((aspect) => String(aspect || "").trim())
+    .filter((aspect) => aspect && !existing.has(aspect));
+  if (!newAspects.length) {
+    return [];
+  }
+  state.coveragePlan.push(...newAspects);
+  const incomingSubpoints = plan.aspectSubpoints && typeof plan.aspectSubpoints === "object" ? plan.aspectSubpoints : {};
+  newAspects.forEach((aspect) => {
+    state.aspectSubpoints[aspect] = Array.isArray(incomingSubpoints[aspect]) ? incomingSubpoints[aspect] : [];
+    state.bankProgress.push({ aspect, status: "pending", count: 0 });
+  });
+  state.planningNote = plan.planningNote || state.planningNote;
+  state.supplementBlocked = false;
+  persistSession();
+  saveTopicSnapshot();
+  return newAspects;
+}
+
+async function expandCoveragePlanForSupplement() {
+  const message = "已有内容方面暂时补不到不相似新题，正在扩展新的知识点内容方面...";
+  setBusy(true, message);
+  renderBankProgress({
+    title: "正在扩展内容方面",
+    detail: message,
+    completedCount: state.questionBank.length
+  });
+  const plan = await requestReview({
+    mode: "bankExpandPlan",
+    topic: state.topic,
+    existingCoveragePlan: state.coveragePlan,
+    existingAspectSubpoints: state.aspectSubpoints,
+    existingQuestions: state.questionBank.map((item) => item.question).slice(-80),
+    history: state.history
+  });
+  return mergeExpandedCoverage(plan);
+}
+
 async function supplementQuestionBank() {
-  const totalTarget = Math.max(state.coveragePlan.length * BANK_QUESTIONS_PER_ASPECT, OBJECTIVE_TARGET);
-  if (!state.topic || !state.coveragePlan.length || state.questionBank.length >= totalTarget) {
+  let totalTarget = Math.max(state.coveragePlan.length * BANK_QUESTIONS_PER_ASPECT, OBJECTIVE_TARGET);
+  if (!state.topic || !state.coveragePlan.length) {
     return 0;
   }
   syncBankProgressFromBank();
-  const targetAdded = Math.min(SUPPLEMENT_TARGET_BUFFER, totalTarget - state.questionBank.length);
   let addedCount = 0;
-  const baseCandidates = supplementCandidates(false);
-  const candidates = baseCandidates.length ? baseCandidates : supplementCandidates(true);
-  for (const candidate of candidates.slice(0, SUPPLEMENT_MAX_ASPECTS)) {
-    if (addedCount >= targetAdded) {
-      break;
-    }
-    const aspect = candidate.aspect;
-    const aspectIndex = state.coveragePlan.indexOf(aspect);
-    const subpointsForAspect = Array.isArray(state.aspectSubpoints[aspect]) ? state.aspectSubpoints[aspect] : [];
-    const existingForAspect = state.questionBank.filter((item) => item.knowledgeAspect === aspect);
-    const aspectGap = Math.max(0, BANK_QUESTIONS_PER_ASPECT - existingForAspect.length);
-    const allowExtra = baseCandidates.length === 0;
-    const needed = Math.min(
-      BANK_QUESTIONS_PER_ASPECT,
-      allowExtra ? BANK_QUESTIONS_PER_ASPECT : aspectGap,
-      targetAdded - addedCount,
-      totalTarget - state.questionBank.length
-    );
-    if (needed <= 0) {
-      continue;
-    }
-    const message = `当前题库余量不足，正在批量补题：为「${aspect}」补充最多 ${needed} 道不相似题目...`;
-    setBusy(true, message);
-    renderBankProgress({
-      title: `正在批量补题：${aspect}`,
-      detail: message,
-      currentIndex: Math.max(0, aspectIndex),
-      completedCount: state.questionBank.length
-    });
-    const result = await requestReview({
-      mode: "bankQuestions",
-      topic: state.topic,
-      aspect,
-      aspectIndex,
-      coveragePlan: state.coveragePlan,
-      questionCount: needed,
-      subpointsForAspect,
-      existingSubpoints: existingForAspect.map((item) => item.focusSubpoint).filter(Boolean),
-      existingQuestions: state.questionBank.map((item) => item.question).slice(-80)
-    });
-    const questions = Array.isArray(result.questions) ? result.questions.map(normalizeClientBankQuestion) : [];
-    const diverseQuestions = filterDiverseQuestions(
-      questions,
-      state.questionBank.map((item) => item.question),
-      existingForAspect.map((item) => item.focusSubpoint)
-    );
-    if (diverseQuestions.length) {
-      state.questionBank.push(...diverseQuestions);
-      addedCount += diverseQuestions.length;
-      state.supplementBlocked = false;
-      const progressIndex = state.bankProgress.findIndex((item) => item.aspect === aspect);
-      if (progressIndex >= 0) {
-        state.bankProgress[progressIndex] = {
-          aspect,
-          status: questionCountForAspect(aspect) >= BANK_QUESTIONS_PER_ASPECT ? "done" : "partial",
-          count: questionCountForAspect(aspect)
-        };
+  for (let expansionRound = 0; expansionRound < 2 && addedCount === 0; expansionRound += 1) {
+    totalTarget = Math.max(state.coveragePlan.length * BANK_QUESTIONS_PER_ASPECT, OBJECTIVE_TARGET);
+    const targetAdded = Math.min(SUPPLEMENT_TARGET_BUFFER, Math.max(SUPPLEMENT_TARGET_BUFFER, totalTarget - state.questionBank.length));
+    const baseCandidates = supplementCandidates(false);
+    const candidates = baseCandidates.length ? baseCandidates : supplementCandidates(true);
+    for (const candidate of candidates.slice(0, SUPPLEMENT_MAX_ASPECTS)) {
+      if (addedCount >= targetAdded) {
+        break;
       }
-      persistSession();
-      saveTopicSnapshot();
+      const aspect = candidate.aspect;
+      const aspectIndex = state.coveragePlan.indexOf(aspect);
+      const subpointsForAspect = Array.isArray(state.aspectSubpoints[aspect]) ? state.aspectSubpoints[aspect] : [];
+      const existingForAspect = state.questionBank.filter((item) => item.knowledgeAspect === aspect);
+      const aspectGap = Math.max(0, BANK_QUESTIONS_PER_ASPECT - existingForAspect.length);
+      const allowExtra = baseCandidates.length === 0;
+      const needed = Math.min(
+        BANK_QUESTIONS_PER_ASPECT,
+        allowExtra ? BANK_QUESTIONS_PER_ASPECT : aspectGap,
+        targetAdded - addedCount
+      );
+      if (needed <= 0) {
+        continue;
+      }
+      const message = `当前题库余量不足，正在批量补题：为「${aspect}」补充最多 ${needed} 道不相似题目...`;
+      setBusy(true, message);
+      renderBankProgress({
+        title: `正在批量补题：${aspect}`,
+        detail: message,
+        currentIndex: Math.max(0, aspectIndex),
+        completedCount: state.questionBank.length
+      });
+      const result = await requestReview({
+        mode: "bankQuestions",
+        topic: state.topic,
+        aspect,
+        aspectIndex,
+        coveragePlan: state.coveragePlan,
+        questionCount: needed,
+        subpointsForAspect,
+        existingSubpoints: existingForAspect.map((item) => item.focusSubpoint).filter(Boolean),
+        existingQuestions: state.questionBank.map((item) => item.question).slice(-80)
+      });
+      const questions = Array.isArray(result.questions) ? result.questions.map(normalizeClientBankQuestion) : [];
+      const diverseQuestions = filterDiverseQuestions(
+        questions,
+        state.questionBank.map((item) => item.question),
+        existingForAspect.map((item) => item.focusSubpoint)
+      );
+      if (diverseQuestions.length) {
+        state.questionBank.push(...diverseQuestions);
+        addedCount += diverseQuestions.length;
+        state.supplementBlocked = false;
+        const progressIndex = state.bankProgress.findIndex((item) => item.aspect === aspect);
+        if (progressIndex >= 0) {
+          state.bankProgress[progressIndex] = {
+            aspect,
+            status: questionCountForAspect(aspect) >= BANK_QUESTIONS_PER_ASPECT ? "done" : "partial",
+            count: questionCountForAspect(aspect)
+          };
+        }
+        persistSession();
+        saveTopicSnapshot();
+      }
+    }
+    if (addedCount === 0) {
+      const expanded = await expandCoveragePlanForSupplement();
+      if (!expanded.length) {
+        break;
+      }
+      syncBankProgressFromBank();
     }
   }
   return addedCount;

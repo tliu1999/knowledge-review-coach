@@ -283,6 +283,39 @@ function buildBankPlanMessages(payload) {
   ];
 }
 
+function buildBankExpandPlanMessages(payload) {
+  const existingAspects = asList(payload.existingCoveragePlan, 24);
+  const system = [
+    "你是严谨的知识题库规划专家。",
+    "任务是在已有内容方面补不出不相似题时，继续扩展新的知识点内容方面。",
+    "新增内容方面必须仍属于该关键词的核心知识、重要边界、变体、跨场景应用、实践细节或常见混淆。",
+    "禁止重复已有内容方面，禁止只换同义词，禁止泛泛使用定义、机制、应用、边界、误区等标签。",
+    "每个新增内容方面必须给出 10 个不重复子点；子点要能生成不相似客观题。",
+    "不要编造论文、链接、作者、年份、精确指标。",
+    "必须输出严格 JSON，不要 Markdown。"
+  ].join("\n");
+
+  const user = [
+    `知识点：${payload.topic}`,
+    existingAspects.length ? `已有内容方面，禁止重复或同义改写：${existingAspects.join("、")}` : "已有内容方面：无",
+    payload.existingQuestions?.length ? `已有题干样例，避免围绕同一角度继续出题：\n${asList(payload.existingQuestions, 30).map((item, index) => `${index + 1}. ${item}`).join("\n")}` : "",
+    "请新增 3 到 5 个尚未覆盖的具体内容方面。",
+    "这些方面应该用于扩展知识点全覆盖，而不是继续补旧方面。",
+    "",
+    "请按 JSON 输出：",
+    "{",
+    '  "contentAspects": [{"aspect": "新增具体内容方面1", "subpoints": ["子点1", "子点2"]}],',
+    '  "coveragePlan": ["新增具体内容方面1", "新增具体内容方面2"],',
+    '  "planningNote": "一句话说明扩展了哪些覆盖范围"',
+    "}"
+  ].filter(Boolean).join("\n");
+
+  return [
+    { role: "system", content: system },
+    { role: "user", content: user }
+  ];
+}
+
 function buildBankQuestionsMessages(payload) {
   const existingQuestions = asList(payload.existingQuestions, 40).map((item, index) => `${index + 1}. ${item}`).join("\n");
   const subpoints = asList(payload.subpointsForAspect, 20);
@@ -932,7 +965,7 @@ async function parseModelJsonWithRepair(content, payload) {
   try {
     return parseModelJson(content);
   } catch (error) {
-    if (!["bankPlan", "bankQuestions"].includes(payload.mode)) {
+    if (!["bankPlan", "bankExpandPlan", "bankQuestions"].includes(payload.mode)) {
       throw error;
     }
     try {
@@ -957,6 +990,14 @@ async function callDeepSeek(payload) {
         configurationMissing: true,
         coveragePlan: [],
         planningNote: "还没有配置 DeepSeek API Key，无法生成题库计划。"
+      };
+    }
+    if (payload.mode === "bankExpandPlan") {
+      return {
+        configurationMissing: true,
+        coveragePlan: [],
+        aspectSubpoints: {},
+        planningNote: "还没有配置 DeepSeek API Key，无法扩展题库内容方面。"
       };
     }
     if (payload.mode === "bankQuestions") {
@@ -1002,13 +1043,15 @@ async function callDeepSeek(payload) {
 
   const messages = payload.mode === "bankPlan"
     ? buildBankPlanMessages(payload)
+    : payload.mode === "bankExpandPlan"
+      ? buildBankExpandPlanMessages(payload)
     : payload.mode === "bankQuestions"
       ? buildBankQuestionsMessages(payload)
       : buildMessages(payload);
 
   const content = await requestDeepSeekJson(messages);
   const parsed = await parseModelJsonWithRepair(content, payload);
-  if (payload.mode === "bankPlan") {
+  if (payload.mode === "bankPlan" || payload.mode === "bankExpandPlan") {
     return normalizeBankPlan(parsed);
   }
   if (payload.mode === "bankQuestions") {
@@ -1046,7 +1089,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && request.url === "/api/review") {
     try {
       const payload = await readRequestJson(request);
-      if (!payload.topic || !["start", "answer", "explain", "newQuestion", "followup", "subjective", "objective", "bankPlan", "bankQuestions"].includes(payload.mode)) {
+      if (!payload.topic || !["start", "answer", "explain", "newQuestion", "followup", "subjective", "objective", "bankPlan", "bankExpandPlan", "bankQuestions"].includes(payload.mode)) {
         sendJson(response, 400, { error: "BAD_REQUEST" });
         return;
       }
