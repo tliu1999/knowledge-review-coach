@@ -526,7 +526,10 @@ function setBusy(isBusy, message = "") {
   optionList.querySelectorAll("button").forEach((button) => {
     button.disabled = isBusy || state.followupOpen || state.mastered || state.awaitingNext;
   });
-  nextQuestionBtn.disabled = isBusy || !state.awaitingNext || state.mastered || state.questionIndex >= state.questionBank.length - 1;
+  const totalTarget = Math.max(state.coveragePlan.length * BANK_QUESTIONS_PER_ASPECT, OBJECTIVE_TARGET);
+  const hasNextQuestion = state.questionIndex < state.questionBank.length - 1;
+  const canSupplementBank = Boolean(state.topic && state.coveragePlan.length && state.questionBank.length < totalTarget);
+  nextQuestionBtn.disabled = isBusy || !state.awaitingNext || state.mastered || (!hasNextQuestion && !canSupplementBank);
   endReviewBtn.disabled = isBusy || !state.topic || state.history.length === 0;
   dontKnowBtn.disabled = state.followupOpen || !canAct();
   newQuestionBtn.disabled = state.followupOpen || !canAct();
@@ -993,6 +996,91 @@ function filterDiverseQuestions(questions, existingQuestions, existingSubpoints)
     }
   }
   return accepted;
+}
+
+function questionCountForAspect(aspect) {
+  return state.questionBank.filter((question) => question.knowledgeAspect === aspect).length;
+}
+
+function weakAspectFromHistory() {
+  const weak = state.history
+    .filter((item) => item.evaluation?.objectiveCorrect === false || Number(item.evaluation?.score || 0) < 85)
+    .map((item) => item.evaluation?.knowledgeAspect)
+    .filter(Boolean);
+  return weak.at(-1) || "";
+}
+
+function chooseSupplementAspect() {
+  const underCovered = state.coveragePlan
+    .map((aspect) => ({ aspect, count: questionCountForAspect(aspect) }))
+    .filter((item) => item.count < BANK_QUESTIONS_PER_ASPECT)
+    .sort((a, b) => a.count - b.count);
+  if (underCovered.length) {
+    return underCovered[0].aspect;
+  }
+  return weakAspectFromHistory() || state.coveragePlan[0] || "";
+}
+
+async function supplementQuestionBank() {
+  const totalTarget = Math.max(state.coveragePlan.length * BANK_QUESTIONS_PER_ASPECT, OBJECTIVE_TARGET);
+  if (!state.topic || !state.coveragePlan.length || state.questionBank.length >= totalTarget) {
+    return 0;
+  }
+  const triedAspects = new Set();
+  for (let attempt = 0; attempt < Math.min(3, state.coveragePlan.length); attempt += 1) {
+    const preferredAspect = chooseSupplementAspect();
+    const aspect = state.coveragePlan.find((item) => item === preferredAspect && !triedAspects.has(item))
+      || state.coveragePlan.find((item) => !triedAspects.has(item))
+      || "";
+    if (!aspect) {
+      break;
+    }
+    triedAspects.add(aspect);
+    const aspectIndex = state.coveragePlan.indexOf(aspect);
+    const subpointsForAspect = Array.isArray(state.aspectSubpoints[aspect]) ? state.aspectSubpoints[aspect] : [];
+    const existingForAspect = state.questionBank.filter((item) => item.knowledgeAspect === aspect);
+    const needed = Math.min(BANK_QUESTIONS_PER_BATCH, totalTarget - state.questionBank.length);
+    const message = `当前题库没有下一题，正在为「${aspect}」补充不相似题目...`;
+    setBusy(true, message);
+    renderBankProgress({
+      title: `正在补充下一题：${aspect}`,
+      detail: message,
+      currentIndex: Math.max(0, aspectIndex),
+      completedCount: state.questionBank.length
+    });
+    const result = await requestReview({
+      mode: "bankQuestions",
+      topic: state.topic,
+      aspect,
+      aspectIndex,
+      coveragePlan: state.coveragePlan,
+      questionCount: needed,
+      subpointsForAspect,
+      existingSubpoints: existingForAspect.map((item) => item.focusSubpoint).filter(Boolean),
+      existingQuestions: state.questionBank.map((item) => item.question).slice(-80)
+    });
+    const questions = Array.isArray(result.questions) ? result.questions.map(normalizeClientBankQuestion) : [];
+    const diverseQuestions = filterDiverseQuestions(
+      questions,
+      state.questionBank.map((item) => item.question),
+      existingForAspect.map((item) => item.focusSubpoint)
+    );
+    if (diverseQuestions.length) {
+      state.questionBank.push(...diverseQuestions);
+      const progressIndex = state.bankProgress.findIndex((item) => item.aspect === aspect);
+      if (progressIndex >= 0) {
+        state.bankProgress[progressIndex] = {
+          aspect,
+          status: questionCountForAspect(aspect) >= BANK_QUESTIONS_PER_ASPECT ? "done" : "running",
+          count: questionCountForAspect(aspect)
+        };
+      }
+      persistSession();
+      saveTopicSnapshot();
+      return diverseQuestions.length;
+    }
+  }
+  return 0;
 }
 
 async function generateQuestionBank(topic, options = {}) {
@@ -1484,8 +1572,20 @@ async function askFollowupQuestion(question) {
 }
 
 async function goToNextQuestion() {
-  if (!state.awaitingNext || state.questionIndex >= state.questionBank.length - 1) {
+  if (!state.awaitingNext) {
     return;
+  }
+  if (state.questionIndex >= state.questionBank.length - 1) {
+    try {
+      const added = await supplementQuestionBank();
+      if (!added) {
+        setBusy(false, "当前题库已没有可用下一题，且暂时没有补到不相似新题。可以结束回顾，或重新开始生成题库。");
+        return;
+      }
+    } catch (error) {
+      setBusy(false, `补充下一题失败：${error.message}`);
+      return;
+    }
   }
   applyBankQuestion(state.questionBank[state.questionIndex + 1], state.questionIndex + 1);
   persistSession();
