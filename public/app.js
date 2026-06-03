@@ -5,6 +5,8 @@ const STAGE_TARGET = 10;
 const CONTENT_ASPECT_TARGET = 10;
 const BANK_QUESTIONS_PER_ASPECT = 10;
 const BANK_QUESTIONS_PER_BATCH = 5;
+const SUPPLEMENT_TARGET_BUFFER = 20;
+const SUPPLEMENT_MAX_ASPECTS = 4;
 
 const state = {
   topic: "",
@@ -1026,8 +1028,10 @@ async function supplementQuestionBank() {
   if (!state.topic || !state.coveragePlan.length || state.questionBank.length >= totalTarget) {
     return 0;
   }
+  const targetAdded = Math.min(SUPPLEMENT_TARGET_BUFFER, totalTarget - state.questionBank.length);
+  let addedCount = 0;
   const triedAspects = new Set();
-  for (let attempt = 0; attempt < Math.min(3, state.coveragePlan.length); attempt += 1) {
+  for (let attempt = 0; attempt < Math.min(SUPPLEMENT_MAX_ASPECTS, state.coveragePlan.length) && addedCount < targetAdded; attempt += 1) {
     const preferredAspect = chooseSupplementAspect();
     const aspect = state.coveragePlan.find((item) => item === preferredAspect && !triedAspects.has(item))
       || state.coveragePlan.find((item) => !triedAspects.has(item))
@@ -1039,11 +1043,20 @@ async function supplementQuestionBank() {
     const aspectIndex = state.coveragePlan.indexOf(aspect);
     const subpointsForAspect = Array.isArray(state.aspectSubpoints[aspect]) ? state.aspectSubpoints[aspect] : [];
     const existingForAspect = state.questionBank.filter((item) => item.knowledgeAspect === aspect);
-    const needed = Math.min(BANK_QUESTIONS_PER_BATCH, totalTarget - state.questionBank.length);
-    const message = `当前题库没有下一题，正在为「${aspect}」补充不相似题目...`;
+    const aspectGap = Math.max(0, BANK_QUESTIONS_PER_ASPECT - existingForAspect.length);
+    const needed = Math.min(
+      BANK_QUESTIONS_PER_ASPECT,
+      aspectGap || BANK_QUESTIONS_PER_ASPECT,
+      targetAdded - addedCount,
+      totalTarget - state.questionBank.length
+    );
+    if (needed <= 0) {
+      continue;
+    }
+    const message = `当前题库余量不足，正在批量补题：为「${aspect}」补充最多 ${needed} 道不相似题目...`;
     setBusy(true, message);
     renderBankProgress({
-      title: `正在补充下一题：${aspect}`,
+      title: `正在批量补题：${aspect}`,
       detail: message,
       currentIndex: Math.max(0, aspectIndex),
       completedCount: state.questionBank.length
@@ -1067,6 +1080,7 @@ async function supplementQuestionBank() {
     );
     if (diverseQuestions.length) {
       state.questionBank.push(...diverseQuestions);
+      addedCount += diverseQuestions.length;
       const progressIndex = state.bankProgress.findIndex((item) => item.aspect === aspect);
       if (progressIndex >= 0) {
         state.bankProgress[progressIndex] = {
@@ -1077,10 +1091,9 @@ async function supplementQuestionBank() {
       }
       persistSession();
       saveTopicSnapshot();
-      return diverseQuestions.length;
     }
   }
-  return 0;
+  return addedCount;
 }
 
 async function generateQuestionBank(topic, options = {}) {
