@@ -72,6 +72,21 @@
           <button id="resetBtn" class="icon-btn" type="button" title="重置会话" aria-label="重置会话">↺</button>
         </header>
 
+        <section id="bankProgressPanel" class="bank-progress-panel" aria-live="polite" hidden>
+          <div class="bank-progress-head">
+            <div>
+              <p class="card-label">题库生成进度</p>
+              <h3 id="bankProgressTitle">正在准备题库</h3>
+            </div>
+            <strong id="bankProgressCount">0/100</strong>
+          </div>
+          <div class="bank-progress-track" aria-hidden="true">
+            <span id="bankProgressFill"></span>
+          </div>
+          <p id="bankProgressDetail"></p>
+          <div id="bankProgressList" class="bank-progress-list"></div>
+        </section>
+
         <section class="question-card" aria-live="polite">
           <div class="question-meta">
             <p class="card-label">当前问题</p>

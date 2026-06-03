@@ -34,6 +34,7 @@ const MIN_OBJECTIVE_QUESTIONS_FOR_MASTERY = MIN_CONTENT_ASPECTS_FOR_MASTERY * MI
 const MIN_OBJECTIVE_ACCURACY_FOR_MASTERY = 0.85;
 const BANK_ASPECT_COUNT = 10;
 const BANK_QUESTIONS_PER_ASPECT = 10;
+const BANK_QUESTIONS_PER_BATCH = 5;
 const MAX_TOPIC_LENGTH = 80;
 const MAX_ANSWER_LENGTH = 5000;
 
@@ -214,6 +215,30 @@ function parseModelJson(content) {
   }
 }
 
+function buildRepairJsonMessages(content, mode) {
+  const expectedShape = mode === "bankQuestions"
+    ? '{ "questions": [ { "questionType": "single_choice", "question": "...", "options": [{"id":"A","text":"..."}], "correctAnswer": ["A"], "stage": "定义", "knowledgeAspect": "...", "basis": ["..."], "questionAnalysis": "...", "optionExplanations": [{"id":"A","explanation":"..."}] } ] }'
+    : '{ "coveragePlan": ["..."], "planningNote": "..." }';
+  return [
+    {
+      role: "system",
+      content: [
+        "你是 JSON 修复器。",
+        "只修复语法错误，不改写语义，不新增题目，不删除可恢复字段。",
+        "输出必须是严格 JSON，不要 Markdown，不要解释。"
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: [
+        `目标结构示例：${expectedShape}`,
+        "下面 JSON 存在语法错误，请修复为可 JSON.parse 的严格 JSON：",
+        String(content || "").slice(0, 18000)
+      ].join("\n")
+    }
+  ];
+}
+
 function buildBankPlanMessages(payload) {
   const focusText = payload.reviewMode === "weak" && payload.focus
     ? [
@@ -259,6 +284,7 @@ function buildBankPlanMessages(payload) {
 function buildBankQuestionsMessages(payload) {
   const existingQuestions = asList(payload.existingQuestions, 40).map((item, index) => `${index + 1}. ${item}`).join("\n");
   const aspectIndex = Number(payload.aspectIndex || 0) + 1;
+  const questionCount = Math.max(1, Math.min(BANK_QUESTIONS_PER_ASPECT, Number(payload.questionCount || BANK_QUESTIONS_PER_BATCH)));
   const system = [
     "你是严谨的客观题出题专家。",
     "任务是围绕指定知识点和指定内容方面生成客观题。",
@@ -278,7 +304,7 @@ function buildBankQuestionsMessages(payload) {
     `内容方面 ${aspectIndex}/${BANK_ASPECT_COUNT}：${payload.aspect}`,
     `完整内容方面清单：${asList(payload.coveragePlan, 16).join("、")}`,
     existingQuestions ? `已生成题目，禁止重复或高度相似：\n${existingQuestions}` : "已生成题目：无",
-    `请为该内容方面生成 ${BANK_QUESTIONS_PER_ASPECT} 道客观题。`,
+    `请为该内容方面生成 ${questionCount} 道客观题。`,
     "题型分布建议：判断题、单选题、多选题都要有；多选题必须有至少两个正确选项。",
     "每题字段要求：",
     "- knowledgeAspect 必须等于当前内容方面。",
@@ -477,7 +503,10 @@ function normalizeBankQuestions(raw, payload) {
       return true;
     })
     .slice(0, BANK_QUESTIONS_PER_ASPECT);
-  return { questions };
+  return {
+    questions,
+    generationWarning: raw.generationWarning ? String(raw.generationWarning) : ""
+  };
 }
 
 function getCoveredStages(history) {
@@ -802,6 +831,52 @@ function ensureObjectiveQuestion(review, payload) {
   };
 }
 
+async function requestDeepSeekJson(messages) {
+  const response = await fetch("https://api.deepseek.com/chat/completions", {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: deepseekModel,
+      messages,
+      temperature: 0.2,
+      response_format: { type: "json_object" }
+    })
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`DEEPSEEK_${response.status}: ${text.slice(0, 500)}`);
+  }
+
+  const data = await response.json();
+  return data.choices?.[0]?.message?.content || "{}";
+}
+
+async function parseModelJsonWithRepair(content, payload) {
+  try {
+    return parseModelJson(content);
+  } catch (error) {
+    if (!["bankPlan", "bankQuestions"].includes(payload.mode)) {
+      throw error;
+    }
+    try {
+      const repaired = await requestDeepSeekJson(buildRepairJsonMessages(content, payload.mode));
+      return parseModelJson(repaired);
+    } catch (repairError) {
+      if (payload.mode === "bankQuestions") {
+        return {
+          questions: [],
+          generationWarning: `该批题目 JSON 解析失败，已跳过本批：${repairError.message}`
+        };
+      }
+      throw repairError;
+    }
+  }
+}
+
 async function callDeepSeek(payload) {
   if (!process.env.DEEPSEEK_API_KEY) {
     if (payload.mode === "bankPlan") {
@@ -858,28 +933,8 @@ async function callDeepSeek(payload) {
       ? buildBankQuestionsMessages(payload)
       : buildMessages(payload);
 
-  const response = await fetch("https://api.deepseek.com/chat/completions", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${process.env.DEEPSEEK_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: deepseekModel,
-      messages,
-      temperature: 0.2,
-      response_format: { type: "json_object" }
-    })
-  });
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`DEEPSEEK_${response.status}: ${text.slice(0, 500)}`);
-  }
-
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || "{}";
-  const parsed = parseModelJson(content);
+  const content = await requestDeepSeekJson(messages);
+  const parsed = await parseModelJsonWithRepair(content, payload);
   if (payload.mode === "bankPlan") {
     return normalizeBankPlan(parsed);
   }

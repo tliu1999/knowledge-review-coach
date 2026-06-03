@@ -3,6 +3,8 @@ const TOPICS_KEY = "knowledge-review-coach-topics";
 const OBJECTIVE_TARGET = 100;
 const STAGE_TARGET = 10;
 const CONTENT_ASPECT_TARGET = 10;
+const BANK_QUESTIONS_PER_ASPECT = 10;
+const BANK_QUESTIONS_PER_BATCH = 5;
 
 const state = {
   topic: "",
@@ -56,6 +58,12 @@ const newQuestionBtn = document.querySelector("#newQuestionBtn");
 const followupBtn = document.querySelector("#followupBtn");
 const subjectiveBtn = document.querySelector("#subjectiveBtn");
 const statusText = document.querySelector("#statusText");
+const bankProgressPanel = document.querySelector("#bankProgressPanel");
+const bankProgressTitle = document.querySelector("#bankProgressTitle");
+const bankProgressCount = document.querySelector("#bankProgressCount");
+const bankProgressFill = document.querySelector("#bankProgressFill");
+const bankProgressDetail = document.querySelector("#bankProgressDetail");
+const bankProgressList = document.querySelector("#bankProgressList");
 const feedbackPanel = document.querySelector("#feedbackPanel");
 const verdictText = document.querySelector("#verdictText");
 const feedbackScore = document.querySelector("#feedbackScore");
@@ -475,6 +483,36 @@ function masteryStatusSentence() {
   return `当前掌握情况：约 ${progress}%，${gaps.join("，")}。`;
 }
 
+function renderBankProgress({ title = "", detail = "", currentIndex = -1, completedCount = state.questionBank.length } = {}) {
+  const totalTarget = Math.max(state.coveragePlan.length * BANK_QUESTIONS_PER_ASPECT, OBJECTIVE_TARGET);
+  const percent = totalTarget ? Math.min(100, Math.round((completedCount / totalTarget) * 100)) : 0;
+  bankProgressPanel.hidden = false;
+  bankProgressTitle.textContent = title || "正在生成题库";
+  bankProgressCount.textContent = `${completedCount}/${totalTarget}`;
+  bankProgressFill.style.width = `${percent}%`;
+  bankProgressDetail.textContent = detail || "请稍等，题库生成完成后会自动进入第一题。";
+  bankProgressList.replaceChildren(
+    ...state.bankProgress.map((item, index) => {
+      const row = document.createElement("article");
+      const status = item.status || (index === currentIndex ? "running" : "pending");
+      row.className = "bank-progress-item";
+      row.dataset.status = status;
+      row.innerHTML = "<span></span><strong></strong>";
+      row.querySelector("span").textContent = `${index + 1}. ${item.aspect}`;
+      row.querySelector("strong").textContent = status === "done"
+        ? `完成 ${item.count || 0} 题`
+        : status === "running"
+          ? "生成中"
+          : "等待中";
+      return row;
+    })
+  );
+}
+
+function hideBankProgress() {
+  bankProgressPanel.hidden = true;
+}
+
 function setBusy(isBusy, message = "") {
   state.busy = isBusy;
   statusText.textContent = message;
@@ -874,6 +912,7 @@ function applyBankQuestion(question, index = state.questionIndex) {
   questionText.textContent = question.question;
   feedbackPanel.hidden = true;
   followupPanel.hidden = true;
+  hideBankProgress();
   normalizeCurrentQuestionState();
   renderOptions();
   setSessionLabels();
@@ -897,6 +936,11 @@ function normalizeClientBankQuestion(question) {
 
 async function generateQuestionBank(topic, options = {}) {
   setBusy(true, "正在规划题库内容方面...");
+  renderBankProgress({
+    title: "正在规划题库内容方面",
+    detail: "模型正在先拆解这个知识点的完整内容范围，完成后会分方面生成题目。",
+    completedCount: 0
+  });
   const plan = await requestReview({
     mode: "bankPlan",
     topic,
@@ -913,20 +957,66 @@ async function generateQuestionBank(topic, options = {}) {
   const bank = [];
   for (const [index, aspect] of state.coveragePlan.entries()) {
     state.bankProgress[index] = { aspect, status: "running", count: 0 };
-    setBusy(true, `正在生成题库：${index + 1}/${state.coveragePlan.length}「${aspect}」... 已完成 ${bank.length} 题`);
-    const result = await requestReview({
-      mode: "bankQuestions",
-      topic,
-      aspect,
-      aspectIndex: index,
-      coveragePlan: state.coveragePlan,
-      reviewMode: options.reviewMode || "all",
-      focus: options.focus || null,
-      existingQuestions: bank.map((item) => item.question).slice(-40)
+    const aspectQuestions = [];
+    for (let offset = 0; offset < BANK_QUESTIONS_PER_ASPECT; offset += BANK_QUESTIONS_PER_BATCH) {
+      const batchNumber = Math.floor(offset / BANK_QUESTIONS_PER_BATCH) + 1;
+      const batchTotal = Math.ceil(BANK_QUESTIONS_PER_ASPECT / BANK_QUESTIONS_PER_BATCH);
+      const message = `正在生成题库：${index + 1}/${state.coveragePlan.length}「${aspect}」第 ${batchNumber}/${batchTotal} 批，已完成 ${bank.length + aspectQuestions.length} 题`;
+      setBusy(true, message);
+      renderBankProgress({
+        title: `正在生成：${aspect}`,
+        detail: message,
+        currentIndex: index,
+        completedCount: bank.length + aspectQuestions.length
+      });
+      const result = await requestReview({
+        mode: "bankQuestions",
+        topic,
+        aspect,
+        aspectIndex: index,
+        coveragePlan: state.coveragePlan,
+        reviewMode: options.reviewMode || "all",
+        focus: options.focus || null,
+        questionCount: BANK_QUESTIONS_PER_BATCH,
+        existingQuestions: [...bank, ...aspectQuestions].map((item) => item.question).slice(-40)
+      });
+      const questions = Array.isArray(result.questions) ? result.questions.map(normalizeClientBankQuestion) : [];
+      aspectQuestions.push(...questions);
+      if (result.generationWarning) {
+        setBusy(true, `${message}。有一批 JSON 修复失败，已跳过并继续。`);
+      }
+    }
+    for (let retry = 0; aspectQuestions.length < BANK_QUESTIONS_PER_ASPECT && retry < 2; retry += 1) {
+      const needed = Math.min(BANK_QUESTIONS_PER_BATCH, BANK_QUESTIONS_PER_ASPECT - aspectQuestions.length);
+      const message = `正在补齐题库：${index + 1}/${state.coveragePlan.length}「${aspect}」还差 ${BANK_QUESTIONS_PER_ASPECT - aspectQuestions.length} 题`;
+      setBusy(true, message);
+      renderBankProgress({
+        title: `正在补齐：${aspect}`,
+        detail: message,
+        currentIndex: index,
+        completedCount: bank.length + aspectQuestions.length
+      });
+      const result = await requestReview({
+        mode: "bankQuestions",
+        topic,
+        aspect,
+        aspectIndex: index,
+        coveragePlan: state.coveragePlan,
+        reviewMode: options.reviewMode || "all",
+        focus: options.focus || null,
+        questionCount: needed,
+        existingQuestions: [...bank, ...aspectQuestions].map((item) => item.question).slice(-40)
+      });
+      const questions = Array.isArray(result.questions) ? result.questions.map(normalizeClientBankQuestion) : [];
+      aspectQuestions.push(...questions);
+    }
+    bank.push(...aspectQuestions.slice(0, BANK_QUESTIONS_PER_ASPECT));
+    state.bankProgress[index] = { aspect, status: "done", count: aspectQuestions.length };
+    renderBankProgress({
+      title: `已完成：${aspect}`,
+      detail: `已完成 ${index + 1}/${state.coveragePlan.length} 个内容方面，当前题库 ${bank.length} 题。`,
+      completedCount: bank.length
     });
-    const questions = Array.isArray(result.questions) ? result.questions.map(normalizeClientBankQuestion) : [];
-    bank.push(...questions);
-    state.bankProgress[index] = { aspect, status: "done", count: questions.length };
     persistSession();
   }
   state.questionBank = bank;
@@ -935,6 +1025,11 @@ async function generateQuestionBank(topic, options = {}) {
   if (!bank.length) {
     throw new Error("题库生成完成但没有有效客观题，请重试或换一个更明确的关键词。");
   }
+  renderBankProgress({
+    title: "题库生成完成",
+    detail: `已生成 ${bank.length} 道客观题，覆盖 ${state.coveragePlan.length} 个内容方面。`,
+    completedCount: bank.length
+  });
   return bank;
 }
 
@@ -1041,6 +1136,7 @@ async function startSession(topic, options = {}) {
   });
   feedbackPanel.hidden = true;
   followupPanel.hidden = true;
+  hideBankProgress();
   historyList.replaceChildren();
   scoreLabel.textContent = "-";
   setSessionLabels();
@@ -1054,6 +1150,11 @@ async function startSession(topic, options = {}) {
     setBusy(false, `题库已生成 ${bank.length} 道客观题，覆盖 ${state.coveragePlan.length} 个内容方面。请回答当前问题。`);
   } catch (error) {
     questionText.textContent = "生成题库失败，请检查服务端日志和 DeepSeek 配置。";
+    renderBankProgress({
+      title: "题库生成失败",
+      detail: error.message,
+      completedCount: state.questionBank.length || 0
+    });
     setBusy(false, error.message);
   }
 }
@@ -1334,6 +1435,7 @@ function endReview() {
   questionText.textContent = `“${state.topic}”本轮回顾已结束。`;
   renderOptions();
   followupPanel.hidden = true;
+  hideBankProgress();
   persistSession();
   saveTopicSnapshot();
   setSessionLabels();
@@ -1379,6 +1481,7 @@ function resetSession() {
   questionText.textContent = "输入一个知识点后，我会先问第一题。";
   feedbackPanel.hidden = true;
   followupPanel.hidden = true;
+  hideBankProgress();
   followupMessages.replaceChildren();
   historyList.replaceChildren();
   scoreLabel.textContent = "-";
