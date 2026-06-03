@@ -32,6 +32,8 @@ const MIN_CONTENT_ASPECTS_FOR_MASTERY = 6;
 const MIN_OBJECTIVE_QUESTIONS_PER_ASPECT = 10;
 const MIN_OBJECTIVE_QUESTIONS_FOR_MASTERY = MIN_CONTENT_ASPECTS_FOR_MASTERY * MIN_OBJECTIVE_QUESTIONS_PER_ASPECT;
 const MIN_OBJECTIVE_ACCURACY_FOR_MASTERY = 0.85;
+const BANK_ASPECT_COUNT = 10;
+const BANK_QUESTIONS_PER_ASPECT = 10;
 const MAX_TOPIC_LENGTH = 80;
 const MAX_ANSWER_LENGTH = 5000;
 
@@ -55,7 +57,7 @@ async function readRequestJson(request) {
   let body = "";
   for await (const chunk of request) {
     body += chunk;
-    if (body.length > 120_000) {
+    if (body.length > 220_000) {
       throw new Error("REQUEST_TOO_LARGE");
     }
   }
@@ -212,8 +214,107 @@ function parseModelJson(content) {
   }
 }
 
-function asList(value) {
-  return Array.isArray(value) ? value.map(String).filter(Boolean).slice(0, 6) : [];
+function buildBankPlanMessages(payload) {
+  const focusText = payload.reviewMode === "weak" && payload.focus
+    ? [
+      "本次是重点回顾题库，应优先覆盖学习者薄弱的具体内容方面。",
+      payload.focus.summary ? `薄弱摘要：${payload.focus.summary}` : "",
+      Array.isArray(payload.focus.aspects) && payload.focus.aspects.length ? `薄弱内容方面：${payload.focus.aspects.join("、")}` : "",
+      Array.isArray(payload.focus.notes) && payload.focus.notes.length ? `薄弱点：${payload.focus.notes.join("；")}` : ""
+    ].filter(Boolean).join("\n")
+    : "本次是完整回顾题库，应覆盖该知识点的完整核心内容。";
+
+  const system = [
+    "你是严谨的知识题库规划专家。",
+    "任务是把一个知识点拆成具体、完整、互不重复的内容方面，用于后续生成客观题题库。",
+    "内容方面必须是该知识点本身的教材级组成内容、原理、关键结构、适用条件、边界、常见混淆和典型应用。",
+    "禁止使用空泛标签，例如：定义、机制、应用、边界、误区、阶段、核心原理、适用场景。",
+    "每个内容方面必须带有该知识点的具体对象或概念，不得泛泛而谈。",
+    "不要编造论文、链接、作者、年份、精确指标。",
+    "必须输出严格 JSON，不要 Markdown。"
+  ].join("\n");
+
+  const user = [
+    `知识点：${payload.topic}`,
+    focusText,
+    `请生成 ${BANK_ASPECT_COUNT} 个内容方面。`,
+    "要求：",
+    "1. 合起来能覆盖该关键词的完整核心知识，而不是只覆盖几个熟悉片段。",
+    "2. 方面之间不要重叠；每个方面后续都能生成 10 道不相似客观题。",
+    "3. 如果关键词有常见上下文差异，请把上下文差异作为独立内容方面体现。",
+    "",
+    "请按 JSON 输出：",
+    "{",
+    '  "coveragePlan": ["具体内容方面1", "具体内容方面2"],',
+    '  "planningNote": "一句话说明覆盖范围"',
+    "}"
+  ].join("\n");
+
+  return [
+    { role: "system", content: system },
+    { role: "user", content: user }
+  ];
+}
+
+function buildBankQuestionsMessages(payload) {
+  const existingQuestions = asList(payload.existingQuestions, 40).map((item, index) => `${index + 1}. ${item}`).join("\n");
+  const aspectIndex = Number(payload.aspectIndex || 0) + 1;
+  const system = [
+    "你是严谨的客观题出题专家。",
+    "任务是围绕指定知识点和指定内容方面生成客观题。",
+    "题目必须考察具体概念、结构、过程、条件、对比、边界或应用判断，不能是空泛模板题。",
+    "同一批题必须覆盖该内容方面内不同子点，不得只是替换措辞或重复同一判断。",
+    "题型只能是 true_false、single_choice、multiple_choice。",
+    "true_false 必须给 A 正确、B 错误两个选项。",
+    "single_choice 必须且只能有一个正确答案。",
+    "multiple_choice 必须至少有两个正确答案；如果只有一个正确点，请改成 single_choice。",
+    "每道题必须提供 questionAnalysis 和每个选项的 optionExplanations。",
+    "依据只能写概念和判分理由，不要编造论文、链接、作者、年份、精确指标。",
+    "必须输出严格 JSON，不要 Markdown。"
+  ].join("\n");
+
+  const user = [
+    `知识点：${payload.topic}`,
+    `内容方面 ${aspectIndex}/${BANK_ASPECT_COUNT}：${payload.aspect}`,
+    `完整内容方面清单：${asList(payload.coveragePlan, 16).join("、")}`,
+    existingQuestions ? `已生成题目，禁止重复或高度相似：\n${existingQuestions}` : "已生成题目：无",
+    `请为该内容方面生成 ${BANK_QUESTIONS_PER_ASPECT} 道客观题。`,
+    "题型分布建议：判断题、单选题、多选题都要有；多选题必须有至少两个正确选项。",
+    "每题字段要求：",
+    "- knowledgeAspect 必须等于当前内容方面。",
+    "- question 必须包含具体知识内容，不能出现“某阶段”“需要区分核心原理、适用边界和常见误区”等泛化句式。",
+    "- basis 写 1-2 条本题判分所需的概念依据。",
+    "- questionAnalysis 写本题考察的重点、关键辨析和易错点。",
+    "- optionExplanations 覆盖所有选项。",
+    "",
+    "请按 JSON 输出：",
+    "{",
+    '  "questions": [',
+    "    {",
+    '      "questionType": "single_choice",',
+    '      "question": "题干",',
+    '      "options": [{"id": "A", "text": "选项"}],',
+    '      "correctAnswer": ["A"],',
+    '      "stage": "定义",',
+    '      "knowledgeAspect": "当前内容方面",',
+    '      "basis": ["依据1"],',
+    '      "questionAnalysis": "本题考察什么、关键辨析是什么、容易错在哪里",',
+    '      "optionExplanations": [{"id": "A", "explanation": "为什么正确或错误"}]',
+    "    }",
+    "  ]",
+    "}"
+  ].join("\n");
+
+  return [
+    { role: "system", content: system },
+    { role: "user", content: user }
+  ];
+}
+
+function asList(value, limit = 6) {
+  return Array.isArray(value)
+    ? value.map((item) => String(item).trim()).filter(Boolean).slice(0, limit)
+    : [];
 }
 
 function currentQuestionText(value) {
@@ -299,6 +400,84 @@ function normalizeOptionExplanations(value) {
     }))
     .filter((item) => item.id && item.explanation)
     .slice(0, 8);
+}
+
+function normalizeBankPlan(raw) {
+  const coveragePlan = [...new Set(asList(raw.coveragePlan, 16)
+    .map((item) => item.replace(/^["“”']|["“”']$/g, "").trim())
+    .filter((item) => item.length >= 3))]
+    .slice(0, BANK_ASPECT_COUNT);
+  return {
+    coveragePlan,
+    planningNote: String(raw.planningNote || "")
+  };
+}
+
+function normalizeBankOptionExplanations(value, options, correctAnswer) {
+  const explanations = normalizeOptionExplanations(value);
+  const byId = new Map(explanations.map((item) => [item.id, item.explanation]));
+  const correctSet = new Set(correctAnswer);
+  return options.map((option) => {
+    const fallback = correctSet.has(option.id)
+      ? `该选项符合本题标准答案，属于本题考察内容的正确判断。`
+      : `该选项不符合本题标准答案，容易与本题考察内容混淆。`;
+    return {
+      id: option.id,
+      text: option.text,
+      isCorrect: correctSet.has(option.id),
+      wasSelected: false,
+      explanation: currentQuestionText(byId.get(option.id) || fallback)
+    };
+  });
+}
+
+function normalizeBankQuestion(item, payload, index) {
+  const { questionType, options, correctAnswer } = normalizeQuestionShape(item);
+  if (!OBJECTIVE_TYPES.includes(questionType)) {
+    return null;
+  }
+  const question = currentQuestionText(item.question || "").trim();
+  if (!question || isGenericQuestion(question)) {
+    return null;
+  }
+  const stage = REVIEW_STAGES.includes(item.stage) ? item.stage : REVIEW_STAGES[index % REVIEW_STAGES.length];
+  const knowledgeAspect = String(item.knowledgeAspect || payload.aspect || "").trim();
+  return {
+    id: `${Date.now()}-${payload.aspectIndex || 0}-${index}`,
+    stage,
+    knowledgeAspect,
+    questionType,
+    question,
+    options,
+    correctAnswer,
+    basis: currentQuestionList(item.basis).slice(0, 2),
+    questionAnalysis: currentQuestionText(item.questionAnalysis || `本题考察 ${knowledgeAspect} 中的关键判断。`),
+    optionExplanations: normalizeBankOptionExplanations(item.optionExplanations, options, correctAnswer)
+  };
+}
+
+function isGenericQuestion(question) {
+  return /关于[“"]?.+[”"]?的[“"]?.+[”"]?阶段/.test(question)
+    || question.includes("需要区分核心原理、适用边界和常见误区")
+    || question.includes("在不同使用条件下，需要区分");
+}
+
+function normalizeBankQuestions(raw, payload) {
+  const source = Array.isArray(raw.questions) ? raw.questions : [];
+  const seen = new Set();
+  const questions = source
+    .map((item, index) => normalizeBankQuestion(item, payload, index))
+    .filter(Boolean)
+    .filter((item) => {
+      const key = normalizeQuestionText(item.question);
+      if (!key || seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .slice(0, BANK_QUESTIONS_PER_ASPECT);
+  return { questions };
 }
 
 function getCoveredStages(history) {
@@ -625,6 +804,19 @@ function ensureObjectiveQuestion(review, payload) {
 
 async function callDeepSeek(payload) {
   if (!process.env.DEEPSEEK_API_KEY) {
+    if (payload.mode === "bankPlan") {
+      return {
+        configurationMissing: true,
+        coveragePlan: [],
+        planningNote: "还没有配置 DeepSeek API Key，无法生成题库计划。"
+      };
+    }
+    if (payload.mode === "bankQuestions") {
+      return {
+        configurationMissing: true,
+        questions: []
+      };
+    }
     return {
       configurationMissing: true,
       mastered: false,
@@ -660,6 +852,12 @@ async function callDeepSeek(payload) {
     };
   }
 
+  const messages = payload.mode === "bankPlan"
+    ? buildBankPlanMessages(payload)
+    : payload.mode === "bankQuestions"
+      ? buildBankQuestionsMessages(payload)
+      : buildMessages(payload);
+
   const response = await fetch("https://api.deepseek.com/chat/completions", {
     method: "POST",
     headers: {
@@ -668,7 +866,7 @@ async function callDeepSeek(payload) {
     },
     body: JSON.stringify({
       model: deepseekModel,
-      messages: buildMessages(payload),
+      messages,
       temperature: 0.2,
       response_format: { type: "json_object" }
     })
@@ -681,7 +879,14 @@ async function callDeepSeek(payload) {
 
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content || "{}";
-  const review = ensureObjectiveQuestion(scoreObjectiveAnswer(normalizeReview(parseModelJson(content)), payload), payload);
+  const parsed = parseModelJson(content);
+  if (payload.mode === "bankPlan") {
+    return normalizeBankPlan(parsed);
+  }
+  if (payload.mode === "bankQuestions") {
+    return normalizeBankQuestions(parsed, payload);
+  }
+  const review = ensureObjectiveQuestion(scoreObjectiveAnswer(normalizeReview(parsed), payload), payload);
   return applyMasteryGate(review, payload);
 }
 
@@ -713,7 +918,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && request.url === "/api/review") {
     try {
       const payload = await readRequestJson(request);
-      if (!payload.topic || !["start", "answer", "explain", "newQuestion", "followup", "subjective", "objective"].includes(payload.mode)) {
+      if (!payload.topic || !["start", "answer", "explain", "newQuestion", "followup", "subjective", "objective", "bankPlan", "bankQuestions"].includes(payload.mode)) {
         sendJson(response, 400, { error: "BAD_REQUEST" });
         return;
       }
