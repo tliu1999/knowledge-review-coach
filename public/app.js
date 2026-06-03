@@ -500,7 +500,7 @@ function renderBankProgress({ title = "", detail = "", currentIndex = -1, comple
   bankProgressList.replaceChildren(
     ...state.bankProgress.map((item, index) => {
       const row = document.createElement("article");
-      const status = item.status || (index === currentIndex ? "running" : "pending");
+      const status = index === currentIndex ? "running" : item.status || "pending";
       row.className = "bank-progress-item";
       row.dataset.status = status;
       row.innerHTML = "<span></span><strong></strong>";
@@ -509,7 +509,9 @@ function renderBankProgress({ title = "", detail = "", currentIndex = -1, comple
         ? `完成 ${item.count || 0} 题`
         : status === "running"
           ? "生成中"
-          : "等待中";
+          : status === "partial"
+            ? `已有 ${item.count || 0} 题`
+            : "等待中";
       return row;
     })
   );
@@ -1004,6 +1006,20 @@ function questionCountForAspect(aspect) {
   return state.questionBank.filter((question) => question.knowledgeAspect === aspect).length;
 }
 
+function syncBankProgressFromBank() {
+  if (!state.coveragePlan.length) {
+    return;
+  }
+  state.bankProgress = state.coveragePlan.map((aspect) => {
+    const count = questionCountForAspect(aspect);
+      return {
+        aspect,
+        status: count >= BANK_QUESTIONS_PER_ASPECT ? "done" : count > 0 ? "partial" : "pending",
+        count
+      };
+    });
+}
+
 function weakAspectFromHistory() {
   const weak = state.history
     .filter((item) => item.evaluation?.objectiveCorrect === false || Number(item.evaluation?.score || 0) < 85)
@@ -1012,15 +1028,20 @@ function weakAspectFromHistory() {
   return weak.at(-1) || "";
 }
 
-function chooseSupplementAspect() {
-  const underCovered = state.coveragePlan
+function supplementCandidates(allowExtra = false) {
+  const candidates = state.coveragePlan
     .map((aspect) => ({ aspect, count: questionCountForAspect(aspect) }))
-    .filter((item) => item.count < BANK_QUESTIONS_PER_ASPECT)
+    .filter((item) => allowExtra || item.count < BANK_QUESTIONS_PER_ASPECT)
     .sort((a, b) => a.count - b.count);
-  if (underCovered.length) {
-    return underCovered[0].aspect;
+  const weakAspect = weakAspectFromHistory();
+  if (weakAspect) {
+    const weakIndex = candidates.findIndex((item) => item.aspect === weakAspect);
+    if (weakIndex > 0) {
+      const [weak] = candidates.splice(weakIndex, 1);
+      candidates.unshift(weak);
+    }
   }
-  return weakAspectFromHistory() || state.coveragePlan[0] || "";
+  return candidates;
 }
 
 async function supplementQuestionBank() {
@@ -1028,25 +1049,24 @@ async function supplementQuestionBank() {
   if (!state.topic || !state.coveragePlan.length || state.questionBank.length >= totalTarget) {
     return 0;
   }
+  syncBankProgressFromBank();
   const targetAdded = Math.min(SUPPLEMENT_TARGET_BUFFER, totalTarget - state.questionBank.length);
   let addedCount = 0;
-  const triedAspects = new Set();
-  for (let attempt = 0; attempt < Math.min(SUPPLEMENT_MAX_ASPECTS, state.coveragePlan.length) && addedCount < targetAdded; attempt += 1) {
-    const preferredAspect = chooseSupplementAspect();
-    const aspect = state.coveragePlan.find((item) => item === preferredAspect && !triedAspects.has(item))
-      || state.coveragePlan.find((item) => !triedAspects.has(item))
-      || "";
-    if (!aspect) {
+  const baseCandidates = supplementCandidates(false);
+  const candidates = baseCandidates.length ? baseCandidates : supplementCandidates(true);
+  for (const candidate of candidates.slice(0, SUPPLEMENT_MAX_ASPECTS)) {
+    if (addedCount >= targetAdded) {
       break;
     }
-    triedAspects.add(aspect);
+    const aspect = candidate.aspect;
     const aspectIndex = state.coveragePlan.indexOf(aspect);
     const subpointsForAspect = Array.isArray(state.aspectSubpoints[aspect]) ? state.aspectSubpoints[aspect] : [];
     const existingForAspect = state.questionBank.filter((item) => item.knowledgeAspect === aspect);
     const aspectGap = Math.max(0, BANK_QUESTIONS_PER_ASPECT - existingForAspect.length);
+    const allowExtra = baseCandidates.length === 0;
     const needed = Math.min(
       BANK_QUESTIONS_PER_ASPECT,
-      aspectGap || BANK_QUESTIONS_PER_ASPECT,
+      allowExtra ? BANK_QUESTIONS_PER_ASPECT : aspectGap,
       targetAdded - addedCount,
       totalTarget - state.questionBank.length
     );
@@ -1085,7 +1105,7 @@ async function supplementQuestionBank() {
       if (progressIndex >= 0) {
         state.bankProgress[progressIndex] = {
           aspect,
-          status: questionCountForAspect(aspect) >= BANK_QUESTIONS_PER_ASPECT ? "done" : "running",
+          status: questionCountForAspect(aspect) >= BANK_QUESTIONS_PER_ASPECT ? "done" : "partial",
           count: questionCountForAspect(aspect)
         };
       }
@@ -1188,7 +1208,11 @@ async function generateQuestionBank(topic, options = {}) {
       ));
     }
     bank.push(...aspectQuestions.slice(0, BANK_QUESTIONS_PER_ASPECT));
-    state.bankProgress[index] = { aspect, status: "done", count: aspectQuestions.length };
+    state.bankProgress[index] = {
+      aspect,
+      status: aspectQuestions.length >= BANK_QUESTIONS_PER_ASPECT ? "done" : aspectQuestions.length > 0 ? "partial" : "pending",
+      count: aspectQuestions.length
+    };
     renderBankProgress({
       title: `已完成：${aspect}`,
       detail: `已完成 ${index + 1}/${state.coveragePlan.length} 个内容方面，当前题库 ${bank.length} 题。`,
@@ -1592,11 +1616,23 @@ async function goToNextQuestion() {
     try {
       const added = await supplementQuestionBank();
       if (!added) {
-        setBusy(false, "当前题库已没有可用下一题，且暂时没有补到不相似新题。可以结束回顾，或重新开始生成题库。");
+        const message = "当前题库已没有可用下一题，且暂时没有补到不相似新题。可以结束回顾，或重新开始生成题库。";
+        renderBankProgress({
+          title: "暂时没有补到新题",
+          detail: message,
+          completedCount: state.questionBank.length
+        });
+        setBusy(false, message);
         return;
       }
     } catch (error) {
-      setBusy(false, `补充下一题失败：${error.message}`);
+      const message = `补充下一题失败：${error.message}`;
+      renderBankProgress({
+        title: "补题失败",
+        detail: message,
+        completedCount: state.questionBank.length
+      });
+      setBusy(false, message);
       return;
     }
   }

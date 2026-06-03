@@ -424,6 +424,10 @@ h2 {
   color: var(--accent-strong);
 }
 
+.bank-progress-item[data-status="partial"] strong {
+  color: var(--amber);
+}
+
 .question-meta {
   display: flex;
   justify-content: space-between;
