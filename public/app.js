@@ -644,7 +644,10 @@ function renderFeedback(review) {
   renderCoachBlocks(review);
 
   renderList(basisList, compactItems(review.basis, 2), "本轮没有返回明确依据。");
-  renderList(errorList, compactItems([...(review.errorPoints || []), ...(review.missingPoints || [])], 4), "没有明显错误或遗漏。");
+  const issueItems = review.objectiveFeedbackPending
+    ? ["正在分析错因..."]
+    : compactItems([...(review.errorPoints || []), ...(review.missingPoints || [])], 4);
+  renderList(errorList, issueItems, "没有明显错误或遗漏。");
 
   renderOptionAnalysis(review);
   explanationBlock.hidden = !review.explanation;
@@ -1381,7 +1384,6 @@ function evaluateObjectiveAnswer(question, answerIds) {
         : "该选项不符合本题标准答案。"))
     };
   });
-  const issueSummary = objectiveIssueSummary(question, optionExplanations, selected, correct);
   return {
     mastered: false,
     score,
@@ -1408,14 +1410,15 @@ function evaluateObjectiveAnswer(question, answerIds) {
     nextTimeStrategy: "",
     optionExplanations,
     objectiveCorrect: exact,
+    objectiveFeedbackPending: !exact,
     verdict: exact ? "客观题回答正确。" : "客观题回答错误。",
     basis: [
       `你的选择是 ${selectedLabel}，标准答案是 ${correctLabel}。`,
       ...compactItems(question.basis, 1)
     ].slice(0, 2),
     positivePoints: exact ? [`本题选择正确，说明你理解了「${question.knowledgeAspect || "当前内容方面"}」的关键判断。`] : [],
-    errorPoints: exact ? [] : issueSummary.errorPoints,
-    missingPoints: exact ? [] : issueSummary.missingPoints,
+    errorPoints: [],
+    missingPoints: [],
     gaps: exact ? [] : [question.knowledgeAspect || "当前内容方面"],
     correction: "",
     explanation: "",
@@ -1442,6 +1445,12 @@ async function refineObjectiveFeedback(review, question, answerIds, answeredQues
     return;
   }
   state.objectiveFeedbackKey = feedbackKey;
+  const localIssueSummary = objectiveIssueSummary(
+    question,
+    review.optionExplanations || [],
+    answerIds,
+    question.correctAnswer || []
+  );
   try {
     const refined = await requestReview({
       mode: "objectiveFeedback",
@@ -1462,8 +1471,9 @@ async function refineObjectiveFeedback(review, question, answerIds, answeredQues
     }
     const nextReview = {
       ...review,
-      errorPoints: refined.errorPoints?.length ? refined.errorPoints : review.errorPoints,
-      missingPoints: refined.missingPoints?.length ? refined.missingPoints : review.missingPoints,
+      objectiveFeedbackPending: false,
+      errorPoints: refined.errorPoints?.length ? refined.errorPoints : localIssueSummary.errorPoints,
+      missingPoints: refined.missingPoints?.length ? refined.missingPoints : localIssueSummary.missingPoints,
       basis: refined.basis?.length ? refined.basis : review.basis,
       nextTimeStrategy: refined.nextTimeStrategy || review.nextTimeStrategy
     };
@@ -1480,7 +1490,25 @@ async function refineObjectiveFeedback(review, question, answerIds, answeredQues
     setBusy(false, `已补充更精准的错误点 / 遗漏点。${masteryStatusSentence()}`);
   } catch (error) {
     if (state.awaitingNext && state.lastAnsweredQuestion === answeredQuestion && state.lastReview === review) {
-      setBusy(false, `已显示基础解析；模型错因分析暂时失败：${error.message}`);
+      const fallbackReview = {
+        ...review,
+        objectiveFeedbackPending: false,
+        errorPoints: localIssueSummary.errorPoints.length
+          ? localIssueSummary.errorPoints
+          : [`模型错因分析暂时失败：${error.message}`],
+        missingPoints: localIssueSummary.missingPoints
+      };
+      state.lastReview = fallbackReview;
+      state.pendingReview = fallbackReview;
+      const lastHistoryItem = state.history.at(-1);
+      if (lastHistoryItem?.question === answeredQuestion) {
+        lastHistoryItem.evaluation = fallbackReview;
+      }
+      renderFeedback(fallbackReview);
+      renderHistory();
+      persistSession();
+      saveTopicSnapshot();
+      setBusy(false, `模型错因分析暂时失败，已显示基础错因。${masteryStatusSentence()}`);
     }
   }
 }
