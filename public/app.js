@@ -643,7 +643,7 @@ function renderFeedback(review) {
   renderCoachBlocks(review);
 
   renderList(basisList, compactItems(review.basis, 2), "本轮没有返回明确依据。");
-  renderList(errorList, compactItems(review.errorPoints, 2), "没有明显错误。");
+  renderList(errorList, compactItems([...(review.errorPoints || []), ...(review.missingPoints || [])], 4), "没有明显错误或遗漏。");
 
   renderOptionAnalysis(review);
   explanationBlock.hidden = !review.explanation;
@@ -982,6 +982,36 @@ function normalizeClientBankQuestion(question) {
     correctAnswer,
     focusSubpoint: String(question.focusSubpoint || question.subpoint || "").trim()
   };
+}
+
+function optionTextById(options, id) {
+  const option = (options || []).find((item) => item.id === id);
+  return option?.text ? `「${option.text}」` : "";
+}
+
+function objectiveIssueSummary(question, optionExplanations, selected, correct) {
+  const selectedSet = new Set(selected);
+  const correctSet = new Set(correct);
+  const wrongSelected = optionExplanations.filter((item) => selectedSet.has(item.id) && !correctSet.has(item.id));
+  const missedCorrect = optionExplanations.filter((item) => correctSet.has(item.id) && !selectedSet.has(item.id));
+  const aspect = question.knowledgeAspect || question.focusSubpoint || "本题考察内容";
+  const errorPoints = wrongSelected.map((item) => {
+    const explanation = normalizeFeedbackText(item.explanation || `${item.id}${optionTextById(question.options, item.id)}不符合本题标准答案。`);
+    return `你选择了 ${item.id}${optionTextById(question.options, item.id)}，但这是干扰项。${explanation}`;
+  });
+  const missingPoints = missedCorrect.map((item) => {
+    const explanation = normalizeFeedbackText(item.explanation || `${item.id}${optionTextById(question.options, item.id)}符合本题标准答案。`);
+    return `你漏选了 ${item.id}${optionTextById(question.options, item.id)}。${explanation}`;
+  });
+  if (errorPoints.length || missingPoints.length) {
+    const guidance = `下次判断时，先抓住「${aspect}」的适用条件，再区分选项是在描述核心机制、适用边界还是常见误区。`;
+    if (missingPoints.length) {
+      missingPoints.push(guidance);
+    } else {
+      errorPoints.push(guidance);
+    }
+  }
+  return { errorPoints, missingPoints };
 }
 
 function normalizedQuestionKey(value) {
@@ -1348,6 +1378,7 @@ function evaluateObjectiveAnswer(question, answerIds) {
         : "该选项不符合本题标准答案。"))
     };
   });
+  const issueSummary = objectiveIssueSummary(question, optionExplanations, selected, correct);
   return {
     mastered: false,
     score,
@@ -1380,8 +1411,8 @@ function evaluateObjectiveAnswer(question, answerIds) {
       ...compactItems(question.basis, 1)
     ].slice(0, 2),
     positivePoints: exact ? [`本题选择正确，说明你理解了「${question.knowledgeAspect || "当前内容方面"}」的关键判断。`] : [],
-    errorPoints: exact ? [] : [`本题选择不正确：你的选择是 ${selectedLabel}，标准答案是 ${correctLabel}。`],
-    missingPoints: missed ? [`漏选 ${missed} 个正确选项。`] : [],
+    errorPoints: exact ? [] : issueSummary.errorPoints,
+    missingPoints: exact ? [] : issueSummary.missingPoints,
     gaps: exact ? [] : [question.knowledgeAspect || "当前内容方面"],
     correction: "",
     explanation: "",
@@ -1392,6 +1423,53 @@ function evaluateObjectiveAnswer(question, answerIds) {
     nextQuestionReason: "",
     masterySummary: ""
   };
+}
+
+async function refineObjectiveFeedback(review, question, answerIds, answeredQuestion) {
+  if (review.objectiveCorrect) {
+    return;
+  }
+  try {
+    const refined = await requestReview({
+      mode: "objectiveFeedback",
+      topic: state.topic,
+      currentQuestion: answeredQuestion,
+      questionType: question.questionType,
+      options: question.options || [],
+      correctAnswer: question.correctAnswer || [],
+      answerIds,
+      knowledgeAspect: question.knowledgeAspect || review.knowledgeAspect || "",
+      focusSubpoint: question.focusSubpoint || review.focusSubpoint || "",
+      questionAnalysis: question.questionAnalysis || review.questionAnalysis || "",
+      basis: question.basis || review.basis || [],
+      optionExplanations: question.optionExplanations || review.optionExplanations || []
+    });
+    if (!state.awaitingNext || state.lastAnsweredQuestion !== answeredQuestion || state.lastReview !== review) {
+      return;
+    }
+    const nextReview = {
+      ...review,
+      errorPoints: refined.errorPoints?.length ? refined.errorPoints : review.errorPoints,
+      missingPoints: refined.missingPoints?.length ? refined.missingPoints : review.missingPoints,
+      basis: refined.basis?.length ? refined.basis : review.basis,
+      nextTimeStrategy: refined.nextTimeStrategy || review.nextTimeStrategy
+    };
+    state.lastReview = nextReview;
+    state.pendingReview = nextReview;
+    const lastHistoryItem = state.history.at(-1);
+    if (lastHistoryItem?.question === answeredQuestion) {
+      lastHistoryItem.evaluation = nextReview;
+    }
+    renderFeedback(nextReview);
+    renderHistory();
+    persistSession();
+    saveTopicSnapshot();
+    setBusy(false, `已补充更精准的错误点 / 遗漏点。${masteryStatusSentence()}`);
+  } catch (error) {
+    if (state.awaitingNext && state.lastAnsweredQuestion === answeredQuestion && state.lastReview === review) {
+      setBusy(false, `已显示基础解析；模型错因分析暂时失败：${error.message}`);
+    }
+  }
 }
 
 async function startSession(topic, options = {}) {
@@ -1487,7 +1565,10 @@ async function submitAnswer(answer) {
       renderHistory();
       persistSession();
       saveTopicSnapshot();
-      setBusy(false, `已显示解析。点击“下一题”继续，或点击“结束回顾”。${masteryStatusSentence()}`);
+      setBusy(false, review.objectiveCorrect
+        ? `已显示解析。点击“下一题”继续，或点击“结束回顾”。${masteryStatusSentence()}`
+        : `已显示基础解析，正在用模型补充精准错误点 / 遗漏点...${masteryStatusSentence()}`);
+      refineObjectiveFeedback(review, bankQuestion, answerIds, question);
       return;
     }
 

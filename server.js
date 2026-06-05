@@ -203,6 +203,66 @@ function buildMessages(payload) {
   ];
 }
 
+function buildObjectiveFeedbackMessages(payload) {
+  const selected = normalizeAnswerIds(payload.answerIds);
+  const correct = normalizeAnswerIds(payload.correctAnswer);
+  const selectedLabel = selected.length ? selected.join("、") : "未选择";
+  const correctLabel = correct.length ? correct.join("、") : "未提供";
+  const optionLines = (Array.isArray(payload.options) ? payload.options : []).slice(0, 12)
+    .map((option) => {
+      const id = String(option.id || "").trim();
+      const tags = [
+        selected.includes(id) ? "学习者已选" : "学习者未选",
+        correct.includes(id) ? "标准答案" : "干扰项"
+      ].join("，");
+      return `${id}. ${option.text || ""}（${tags}）`;
+    })
+    .join("\n");
+  const providedExplanations = (Array.isArray(payload.optionExplanations) ? payload.optionExplanations : []).slice(0, 12)
+    .map((item) => `${item.id}. ${item.explanation || ""}`)
+    .join("\n");
+
+  return [
+    {
+      role: "system",
+      content: [
+        "你是严谨的客观题错因分析助手。",
+        "只分析用户刚回答的这一道题，不生成下一题，不改变标准答案，不重新判分。",
+        "必须基于题干、选项、标准答案、学习者选择和已给选项解释来分析；不要编造题外资料、论文、链接、作者、年份或精确指标。",
+        "错误点要解释用户错选的每个干扰项为什么不应选，并指出可能混淆的概念、阶段、条件、机制或边界。",
+        "遗漏点要解释用户漏选的每个正确项为什么应该选，并指出它抓住的关键判断条件。",
+        "如果没有错选或漏选，对应数组返回空数组。",
+        "输出必须是严格 JSON，不要 Markdown。"
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: [
+        `知识点：${payload.topic}`,
+        `内容方面：${payload.knowledgeAspect || "未标注"}`,
+        `具体子点：${payload.focusSubpoint || "未标注"}`,
+        `题型：${payload.questionType}`,
+        `题干：${payload.currentQuestion}`,
+        `学习者选择：${selectedLabel}`,
+        `标准答案：${correctLabel}`,
+        "选项：",
+        optionLines,
+        payload.questionAnalysis ? `本题说明：${payload.questionAnalysis}` : "",
+        payload.basis?.length ? `关键依据：${asList(payload.basis, 4).join("；")}` : "",
+        providedExplanations ? `已有选项解释：\n${providedExplanations}` : "",
+        "",
+        "请按 JSON 输出：",
+        "{",
+        '  "errorPoints": ["你选择了 B，但 B ..."],',
+        '  "missingPoints": ["你漏选了 C。C ..."],',
+        '  "basis": ["用于判断本题的关键依据"],',
+        '  "nextTimeStrategy": "下次判断这类题应抓住的条件"',
+        "}"
+      ].filter(Boolean).join("\n")
+    }
+  ];
+}
+
 function parseModelJson(content) {
   try {
     return JSON.parse(content);
@@ -334,6 +394,7 @@ function buildBankQuestionsMessages(payload) {
     "single_choice 必须且只能有一个正确答案。",
     "multiple_choice 必须至少有两个正确答案；如果只有一个正确点，请改成 single_choice。",
     "每道题必须提供 questionAnalysis 和每个选项的 optionExplanations。",
+    "optionExplanations 不能只写“符合/不符合标准答案”；正确选项要说明它抓住了哪个概念、机制、边界或判断条件，错误选项要说明错在哪里、容易和哪个概念混淆。",
     "依据只能写概念和判分理由，不要编造论文、链接、作者、年份、精确指标。",
     "必须输出严格 JSON，不要 Markdown。"
   ].join("\n");
@@ -354,7 +415,7 @@ function buildBankQuestionsMessages(payload) {
     "- question 必须包含具体知识内容，不能出现“某阶段”“需要区分核心原理、适用边界和常见误区”等泛化句式。",
     "- basis 写 1-2 条本题判分所需的概念依据。",
     "- questionAnalysis 写本题考察的重点、关键辨析和易错点。",
-    "- optionExplanations 覆盖所有选项。",
+    "- optionExplanations 覆盖所有选项；正确选项说明为什么应该选，错误选项说明为什么不能选、混淆点是什么。",
     "",
     "请按 JSON 输出：",
     "{",
@@ -369,7 +430,7 @@ function buildBankQuestionsMessages(payload) {
     '      "focusSubpoint": "当前内容方面下的具体子点",',
     '      "basis": ["依据1"],',
     '      "questionAnalysis": "本题考察什么、关键辨析是什么、容易错在哪里",',
-    '      "optionExplanations": [{"id": "A", "explanation": "为什么正确或错误"}]',
+    '      "optionExplanations": [{"id": "A", "explanation": "说明该选项为什么应选或不应选，以及对应的判断条件或混淆点"}]',
     "    }",
     "  ]",
     "}"
@@ -909,6 +970,15 @@ function normalizeReview(raw) {
   };
 }
 
+function normalizeObjectiveFeedback(raw) {
+  return {
+    errorPoints: currentQuestionList(raw.errorPoints).slice(0, 4),
+    missingPoints: currentQuestionList(raw.missingPoints).slice(0, 4),
+    basis: currentQuestionList(raw.basis).slice(0, 3),
+    nextTimeStrategy: currentQuestionText(raw.nextTimeStrategy)
+  };
+}
+
 function ensureObjectiveQuestion(review, payload) {
   if (payload.mode !== "objective" || OBJECTIVE_TYPES.includes(review.questionType)) {
     return review;
@@ -1006,6 +1076,15 @@ async function callDeepSeek(payload) {
         questions: []
       };
     }
+    if (payload.mode === "objectiveFeedback") {
+      return {
+        configurationMissing: true,
+        errorPoints: [],
+        missingPoints: [],
+        basis: [],
+        nextTimeStrategy: ""
+      };
+    }
     return {
       configurationMissing: true,
       mastered: false,
@@ -1047,6 +1126,8 @@ async function callDeepSeek(payload) {
       ? buildBankExpandPlanMessages(payload)
     : payload.mode === "bankQuestions"
       ? buildBankQuestionsMessages(payload)
+    : payload.mode === "objectiveFeedback"
+      ? buildObjectiveFeedbackMessages(payload)
       : buildMessages(payload);
 
   const content = await requestDeepSeekJson(messages);
@@ -1056,6 +1137,9 @@ async function callDeepSeek(payload) {
   }
   if (payload.mode === "bankQuestions") {
     return normalizeBankQuestions(parsed, payload);
+  }
+  if (payload.mode === "objectiveFeedback") {
+    return normalizeObjectiveFeedback(parsed);
   }
   const review = ensureObjectiveQuestion(scoreObjectiveAnswer(normalizeReview(parsed), payload), payload);
   return applyMasteryGate(review, payload);
@@ -1089,7 +1173,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && request.url === "/api/review") {
     try {
       const payload = await readRequestJson(request);
-      if (!payload.topic || !["start", "answer", "explain", "newQuestion", "followup", "subjective", "objective", "bankPlan", "bankExpandPlan", "bankQuestions"].includes(payload.mode)) {
+      if (!payload.topic || !["start", "answer", "explain", "newQuestion", "followup", "subjective", "objective", "bankPlan", "bankExpandPlan", "bankQuestions", "objectiveFeedback"].includes(payload.mode)) {
         sendJson(response, 400, { error: "BAD_REQUEST" });
         return;
       }
