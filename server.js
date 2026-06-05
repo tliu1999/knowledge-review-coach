@@ -230,8 +230,9 @@ function buildObjectiveFeedbackMessages(payload) {
         "只分析用户刚回答的这一道题，不生成下一题，不改变标准答案，不重新判分。",
         "必须基于题干、选项、标准答案、学习者选择和已给选项解释来分析；不要编造题外资料、论文、链接、作者、年份或精确指标。",
         "错误点要解释用户错选的每个干扰项为什么不应选，并指出可能混淆的概念、阶段、条件、机制或边界。",
-        "遗漏点要解释用户漏选的每个正确项为什么应该选，并指出它抓住的关键判断条件。",
-        "如果没有错选或漏选，对应数组返回空数组。",
+        "missingPoints 要解释用户没有选中的正确项为什么应该选，并指出它抓住的关键判断条件。",
+        "多选题可以使用“你漏选了 X”；单选题和判断题不要说“漏选”，应写“正确答案是 X。X 正确：...”。",
+        "如果没有错选或未选中的正确项，对应数组返回空数组。",
         "输出必须是严格 JSON，不要 Markdown。"
       ].join("\n")
     },
@@ -254,7 +255,7 @@ function buildObjectiveFeedbackMessages(payload) {
         "请按 JSON 输出：",
         "{",
         '  "errorPoints": ["你选择了 B，但 B ..."],',
-        '  "missingPoints": ["你漏选了 C。C ..."],',
+        '  "missingPoints": ["多选题：你漏选了 C。C ...；单选题/判断题：正确答案是 B。B 正确：..."],',
         '  "basis": ["用于判断本题的关键依据"],',
         '  "nextTimeStrategy": "下次判断这类题应抓住的条件"',
         "}"
@@ -794,6 +795,11 @@ function scoreObjectiveAnswer(review, payload) {
   const rightSelected = selected.filter((id) => correctSet.has(id)).length;
   const wrongSelected = selected.filter((id) => !correctSet.has(id)).length;
   const missed = correct.filter((id) => !selectedSet.has(id)).length;
+  const missedCorrectTexts = (payload.options || [])
+    .filter((option) => correctSet.has(option.id) && !selectedSet.has(option.id))
+    .map((option) => payload.questionType === "multiple_choice"
+      ? `你漏选了 ${option.id}. ${option.text}。该选项属于本题标准答案。`
+      : `正确答案是 ${option.id}. ${option.text}。${option.id} 正确：该选项最符合题干的核心问法。`);
   const partial = correct.length ? Math.max(0, Math.round((rightSelected / correct.length - wrongSelected * 0.35) * 100)) : 0;
   const score = exact ? 100 : Math.min(70, partial);
   const answerLabel = selected.length ? selected.join("、") : "未选择";
@@ -851,7 +857,7 @@ function scoreObjectiveAnswer(review, payload) {
       ? review.errorPoints
       : [`客观题选择不正确：你的选择是 ${answerLabel}，标准答案是 ${correctLabel}。`, ...review.errorPoints],
     missingPoints: missed
-      ? [...review.missingPoints, `漏选 ${missed} 个正确选项。`]
+      ? [...review.missingPoints, ...missedCorrectTexts]
       : review.missingPoints,
     verdict: exact ? "客观题回答正确。" : "客观题回答错误。",
     conclusion: exact

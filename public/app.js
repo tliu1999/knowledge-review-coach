@@ -1014,7 +1014,10 @@ function objectiveIssueSummary(question, optionExplanations, selected, correct) 
   });
   const missingPoints = missedCorrect.map((item) => {
     const explanation = normalizeFeedbackText(item.explanation || `${item.id}${optionTextById(question.options, item.id)}符合本题标准答案。`);
-    return `你漏选了 ${item.id}${optionTextById(question.options, item.id)}。${explanation}`;
+    if (question.questionType === "multiple_choice") {
+      return `你漏选了 ${item.id}${optionTextById(question.options, item.id)}。${explanation}`;
+    }
+    return `正确答案是 ${item.id}${optionTextById(question.options, item.id)}。${item.id} 正确：${explanation}`;
   });
   if (errorPoints.length || missingPoints.length) {
     const guidance = `下次判断时，先抓住「${aspect}」的适用条件，再区分选项是在描述核心机制、适用边界还是常见误区。`;
