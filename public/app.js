@@ -30,6 +30,7 @@ const state = {
   awaitingNext: false,
   followupOpen: false,
   followupMessages: [],
+  objectiveFeedbackKey: "",
   questionBank: [],
   questionIndex: 0,
   coveragePlan: [],
@@ -545,7 +546,7 @@ function setBusy(isBusy, message = "") {
   statusText.textContent = message;
   topicInput.disabled = isBusy;
   answerInput.disabled = isBusy || state.followupOpen || !state.currentQuestion || state.mastered || state.awaitingNext || isObjectiveQuestion();
-  submitAnswerBtn.disabled = isBusy || state.followupOpen || !state.currentQuestion || state.mastered || !hasAnswer();
+  submitAnswerBtn.disabled = isBusy || state.followupOpen || !state.currentQuestion || state.mastered || state.awaitingNext || !hasAnswer();
   optionList.querySelectorAll("button").forEach((button) => {
     button.disabled = isBusy || state.followupOpen || state.mastered || state.awaitingNext;
   });
@@ -902,6 +903,7 @@ function applyReviewToQuestion(review) {
   state.pendingReview = null;
   state.followupOpen = false;
   state.followupMessages = [];
+  state.objectiveFeedbackKey = "";
   state.lastAnsweredQuestion = "";
   state.lastAnsweredAnswer = "";
   state.lastAnsweredQuestionType = "short_answer";
@@ -943,6 +945,7 @@ function applyBankQuestion(question, index = state.questionIndex) {
   state.pendingReview = null;
   state.followupOpen = false;
   state.followupMessages = [];
+  state.objectiveFeedbackKey = "";
   state.lastAnsweredQuestion = "";
   state.lastAnsweredAnswer = "";
   state.lastAnsweredQuestionType = "short_answer";
@@ -1429,6 +1432,16 @@ async function refineObjectiveFeedback(review, question, answerIds, answeredQues
   if (review.objectiveCorrect) {
     return;
   }
+  const feedbackKey = [
+    answeredQuestion,
+    question.questionType,
+    answerIds.join(","),
+    (question.correctAnswer || []).join(",")
+  ].join("|");
+  if (state.objectiveFeedbackKey === feedbackKey) {
+    return;
+  }
+  state.objectiveFeedbackKey = feedbackKey;
   try {
     const refined = await requestReview({
       mode: "objectiveFeedback",
@@ -1494,6 +1507,7 @@ async function startSession(topic, options = {}) {
     awaitingNext: false,
     followupOpen: false,
     followupMessages: [],
+    objectiveFeedbackKey: "",
     questionBank: [],
     questionIndex: 0,
     coveragePlan: [],
@@ -1528,6 +1542,9 @@ async function startSession(topic, options = {}) {
 }
 
 async function submitAnswer(answer) {
+  if (state.busy || state.awaitingNext) {
+    return;
+  }
   const question = state.currentQuestion;
   const answerIds = [...state.selectedAnswerIds];
   const displayAnswer = isObjectiveQuestion() ? answerIds.join("、") : answer;
@@ -1558,6 +1575,7 @@ async function submitAnswer(answer) {
       state.awaitingNext = true;
       state.followupOpen = false;
       state.followupMessages = [];
+      state.objectiveFeedbackKey = "";
       state.mastered = false;
       followupPanel.hidden = true;
       renderOptions();
@@ -1826,6 +1844,7 @@ function endReview() {
   state.selectedAnswerIds = [];
   state.followupOpen = false;
   state.followupMessages = [];
+  state.objectiveFeedbackKey = "";
   state.lastAnsweredQuestion = "";
   state.lastAnsweredAnswer = "";
   state.lastAnsweredQuestionType = "short_answer";
@@ -1901,7 +1920,7 @@ topicForm.addEventListener("submit", (event) => {
 answerForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const answer = answerInput.value.trim();
-  if (hasAnswer() && state.currentQuestion && !state.busy) {
+  if (hasAnswer() && state.currentQuestion && !state.busy && !state.awaitingNext) {
     submitAnswer(answer);
   }
 });
