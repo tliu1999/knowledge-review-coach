@@ -1,5 +1,6 @@
 const STORAGE_KEY = "knowledge-review-coach-session";
 const TOPICS_KEY = "knowledge-review-coach-topics";
+const ACCESS_PASSWORD_KEY = "knowledge-review-coach-access-password";
 const OBJECTIVE_TARGET = 100;
 const STAGE_TARGET = 10;
 const CONTENT_ASPECT_TARGET = 10;
@@ -42,6 +43,7 @@ const state = {
 
 const topicForm = document.querySelector("#topicForm");
 const topicInput = document.querySelector("#topicInput");
+const accessPasswordInput = document.querySelector("#accessPasswordInput");
 const topicLabel = document.querySelector("#topicLabel");
 const roundLabel = document.querySelector("#roundLabel");
 const scoreLabel = document.querySelector("#scoreLabel");
@@ -896,10 +898,14 @@ function renderRestoredSession() {
 }
 
 async function requestReview(payload) {
+  const accessPassword = accessPasswordInput ? accessPasswordInput.value.trim() : "";
+  if (accessPassword) {
+    localStorage.setItem(ACCESS_PASSWORD_KEY, accessPassword);
+  }
   const response = await fetch("/api/review", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ ...payload, accessPassword })
   });
   const data = await response.json();
   if (!response.ok) {
@@ -2006,5 +2012,11 @@ if (restoreSession()) {
   renderRestoredSession();
 } else {
   resetSession();
+}
+if (accessPasswordInput) {
+  accessPasswordInput.value = localStorage.getItem(ACCESS_PASSWORD_KEY) || "";
+  accessPasswordInput.addEventListener("input", () => {
+    localStorage.setItem(ACCESS_PASSWORD_KEY, accessPasswordInput.value.trim());
+  });
 }
 renderTopicLibrary();

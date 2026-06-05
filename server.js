@@ -25,6 +25,9 @@ await loadLocalEnv();
 
 const port = Number(process.env.PORT || 5177);
 const deepseekModel = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+const reviewAccessPassword = String(process.env.REVIEW_ACCESS_PASSWORD || "").trim();
+const dailyRequestLimit = Math.max(1, Number(process.env.DAILY_REQUEST_LIMIT || 200));
+const dailyRequestCounts = new Map();
 const REVIEW_STAGES = ["定义", "机制", "适用场景", "边界与误区", "对比概念", "实际应用"];
 const QUESTION_TYPES = ["true_false", "single_choice", "multiple_choice", "short_answer"];
 const OBJECTIVE_TYPES = ["true_false", "single_choice", "multiple_choice"];
@@ -52,6 +55,35 @@ function sendJson(response, statusCode, payload) {
     "cache-control": "no-store"
   });
   response.end(JSON.stringify(payload));
+}
+
+function clientIp(request) {
+  const forwarded = request.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim()) {
+    return forwarded.split(",")[0].trim();
+  }
+  return request.socket.remoteAddress || "unknown";
+}
+
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function checkAccessPassword(payload) {
+  if (!reviewAccessPassword) {
+    return true;
+  }
+  return String(payload.accessPassword || "").trim() === reviewAccessPassword;
+}
+
+function consumeDailyRequest(request) {
+  const key = `${todayKey()}:${clientIp(request)}`;
+  const current = dailyRequestCounts.get(key) || 0;
+  if (current >= dailyRequestLimit) {
+    return false;
+  }
+  dailyRequestCounts.set(key, current + 1);
+  return true;
 }
 
 async function readRequestJson(request) {
@@ -1181,6 +1213,14 @@ const server = createServer(async (request, response) => {
       const payload = await readRequestJson(request);
       if (!payload.topic || !["start", "answer", "explain", "newQuestion", "followup", "subjective", "objective", "bankPlan", "bankExpandPlan", "bankQuestions", "objectiveFeedback"].includes(payload.mode)) {
         sendJson(response, 400, { error: "BAD_REQUEST" });
+        return;
+      }
+      if (!checkAccessPassword(payload)) {
+        sendJson(response, 401, { error: "ACCESS_DENIED", message: "访问密码不正确。" });
+        return;
+      }
+      if (!consumeDailyRequest(request)) {
+        sendJson(response, 429, { error: "RATE_LIMITED", message: `今天的调用次数已达到上限 ${dailyRequestLimit} 次，请明天再试。` });
         return;
       }
       payload.topic = String(payload.topic).trim().slice(0, MAX_TOPIC_LENGTH);

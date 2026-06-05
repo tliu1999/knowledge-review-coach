@@ -21,7 +21,13 @@ cp .env.example .env
 
 ```bash
 DEEPSEEK_API_KEY=sk-your-deepseek-api-key
+REVIEW_ACCESS_PASSWORD=your-shared-access-password
+DAILY_REQUEST_LIMIT=200
 ```
+
+`REVIEW_ACCESS_PASSWORD` 是给访问者输入的简单调用密码。部署到公网时建议一定配置，否则任何打开网址的人都可以消耗你的 DeepSeek 额度。
+
+`DAILY_REQUEST_LIMIT` 是单个 IP 每天最多调用 `/api/review` 的次数，默认 200。限制保存在服务进程内存中，服务重启后会重新计数。
 
 ## 启动
 
@@ -34,6 +40,38 @@ npm start
 ```text
 http://localhost:5177
 ```
+
+## 公开部署
+
+这个项目需要 Node 后端调用 DeepSeek API，不能只用 GitHub Pages 部署。推荐用 Render、Railway、Fly.io 或 Zeabur 这类可以运行 Node Web Service 的平台。
+
+Render 部署步骤：
+
+1. 将代码推送到 GitHub。
+2. 在 Render 新建 Web Service，连接这个仓库。
+3. 如果 Render 识别到 `render.yaml`，按 Blueprint 创建服务即可；也可以手动填写：
+
+```bash
+Build Command: npm install
+Start Command: npm start
+```
+
+4. 在 Render 的 Environment Variables 中配置：
+
+```bash
+DEEPSEEK_API_KEY=你的 DeepSeek API Key
+DEEPSEEK_MODEL=deepseek-chat
+REVIEW_ACCESS_PASSWORD=给朋友使用的访问密码
+DAILY_REQUEST_LIMIT=200
+```
+
+5. 部署完成后，Render 会提供一个公网地址。访问者打开地址后，在左侧输入访问密码，再开始回顾。
+
+注意事项：
+
+- DeepSeek Key 只放在后端环境变量里，不要写到前端代码或公开页面。
+- 访问密码只是轻量保护，不等于完整账号系统。
+- 如果准备给很多人用，建议后续增加登录、用户级额度、持久化统计和更严格限流。
 
 ## 设计原则
 

@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: knowledge-review-coach
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: DEEPSEEK_API_KEY
+        sync: false
+      - key: DEEPSEEK_MODEL
+        value: deepseek-chat
+      - key: REVIEW_ACCESS_PASSWORD
+        sync: false
+      - key: DAILY_REQUEST_LIMIT
+        value: "200"
