@@ -643,10 +643,17 @@ function renderFeedback(review) {
 
   renderCoachBlocks(review);
 
-  renderList(basisList, compactItems(review.basis, 2), "本轮没有返回明确依据。");
+  const basisItems = review.objectiveFeedbackPending
+    ? ["正在分析关键依据..."]
+    : compactItems(review.basis, 2);
+  renderList(basisList, basisItems, "本轮没有返回明确依据。");
   const issueItems = review.objectiveFeedbackPending
     ? ["正在分析错因..."]
-    : compactItems([...(review.errorPoints || []), ...(review.missingPoints || [])], 4);
+    : compactItems([
+      ...(review.errorPoints || []),
+      ...(review.missingPoints || []),
+      review.nextTimeStrategy ? `下次判断：${review.nextTimeStrategy}` : ""
+    ], 5);
   renderList(errorList, issueItems, "没有明显错误或遗漏。");
 
   renderOptionAnalysis(review);
@@ -1496,7 +1503,9 @@ async function refineObjectiveFeedback(review, question, answerIds, answeredQues
         errorPoints: localIssueSummary.errorPoints.length
           ? localIssueSummary.errorPoints
           : [`模型错因分析暂时失败：${error.message}`],
-        missingPoints: localIssueSummary.missingPoints
+        missingPoints: localIssueSummary.missingPoints,
+        basis: review.basis,
+        nextTimeStrategy: review.nextTimeStrategy
       };
       state.lastReview = fallbackReview;
       state.pendingReview = fallbackReview;
