@@ -1694,7 +1694,8 @@ async function requestQuestionMode(mode, message) {
     renderHistory();
     persistSession();
     saveTopicSnapshot();
-    setBusy(false, `已显示解析。点击“下一题”继续，或点击“结束回顾”。${masteryStatusSentence()}`);
+    setBusy(false, `已显示基础解析，正在用模型补充精准错误点 / 遗漏点...${masteryStatusSentence()}`);
+    refineObjectiveFeedback(review, bankQuestion, [], state.currentQuestion);
     return;
   }
   if (mode === "newQuestion" && state.questionIndex < state.questionBank.length - 1) {
@@ -1912,6 +1913,7 @@ function resetSession() {
     awaitingNext: false,
     followupOpen: false,
     followupMessages: [],
+    objectiveFeedbackKey: "",
     questionBank: [],
     questionIndex: 0,
     coveragePlan: [],
