@@ -344,6 +344,19 @@ function restoreSession() {
       planningNote: saved.planningNote || ""
     });
     hydrateAnsweredSnapshotFromHistory();
+    if (state.awaitingNext && state.lastReview && state.lastAnsweredQuestionType === "short_answer") {
+      state.lastReview = sanitizeSubjectiveReview(state.lastReview, state.lastAnsweredQuestion || state.currentQuestion, state.lastAnsweredAnswer);
+      state.pendingReview = state.pendingReview
+        ? sanitizeSubjectiveReview(state.pendingReview, state.lastAnsweredQuestion || state.currentQuestion, state.lastAnsweredAnswer)
+        : null;
+      state.currentQuestionType = "short_answer";
+      state.currentOptions = [];
+      state.currentCorrectAnswer = [];
+      state.selectedAnswerIds = [];
+      state.lastAnsweredOptions = [];
+      state.lastAnsweredCorrectAnswer = [];
+      state.lastAnsweredSelectedAnswerIds = [];
+    }
     return true;
   } catch {
     return false;
@@ -355,7 +368,13 @@ function canAct() {
 }
 
 function canSwitchQuestionMode() {
-  return Boolean(state.topic && state.currentQuestion && !state.busy && !state.mastered && !state.awaitingNext);
+  const canReturnFromAnsweredSubjective = state.awaitingNext
+    && state.lastAnsweredQuestionType === "short_answer"
+    && state.questionBank.length;
+  return Boolean(state.topic
+    && !state.busy
+    && !state.mastered
+    && ((!state.awaitingNext && (state.currentQuestion || state.questionBank.length)) || canReturnFromAnsweredSubjective));
 }
 
 function isObjectiveType(type) {
@@ -591,6 +610,25 @@ function displayReview(review) {
     ...review,
     verdict: "客观题回答错误。",
     positivePoints: (review.positivePoints || []).filter((point) => !point.includes("正确"))
+  };
+}
+
+function sanitizeSubjectiveReview(review, question = "", answer = "") {
+  const verdict = normalizeFeedbackText(review.verdict || review.conclusion || "已收到主观题回答。");
+  return {
+    ...review,
+    answeredQuestion: question || review.answeredQuestion || review.question || "",
+    answeredAnswer: answer || review.answeredAnswer || "",
+    answeredQuestionType: "short_answer",
+    questionType: "short_answer",
+    question: question || review.question || "",
+    options: [],
+    correctAnswer: [],
+    answerComparison: null,
+    optionExplanations: [],
+    objectiveCorrect: null,
+    conclusion: normalizeFeedbackText(review.conclusion || verdict),
+    verdict
   };
 }
 
@@ -1453,7 +1491,7 @@ async function submitAnswer(answer) {
       return;
     }
 
-    const review = await requestReview({
+    const rawReview = await requestReview({
       mode: "answer",
       topic: state.topic,
       currentQuestion: question,
@@ -1464,6 +1502,7 @@ async function submitAnswer(answer) {
       answer: displayAnswer,
       history: state.history
     });
+    const review = sanitizeSubjectiveReview(rawReview, question, displayAnswer);
 
     review.answeredQuestion = question;
     review.answeredAnswer = displayAnswer;
@@ -1576,7 +1615,7 @@ async function requestSubjectiveQuestion() {
       questionType: "short_answer",
       history: state.history
     });
-    applyReviewToQuestion({ ...review, questionType: "short_answer", options: [], correctAnswer: [] });
+    applyReviewToQuestion(sanitizeSubjectiveReview(review, review.question || review.nextQuestion || ""));
     feedbackPanel.hidden = true;
     persistSession();
     saveTopicSnapshot();
@@ -1591,9 +1630,11 @@ async function requestObjectiveQuestion() {
   if (!canSwitchQuestionMode()) {
     return;
   }
-  const nextBankQuestion = bankQuestionAt();
+  const fallbackIndex = Math.min(Math.max(state.questionIndex, 0), Math.max(state.questionBank.length - 1, 0));
+  const nextBankQuestion = bankQuestionAt() || state.questionBank[fallbackIndex] || null;
   if (nextBankQuestion) {
-    applyBankQuestion(nextBankQuestion, state.questionIndex);
+    const questionIndex = state.questionBank.indexOf(nextBankQuestion);
+    applyBankQuestion(nextBankQuestion, questionIndex >= 0 ? questionIndex : fallbackIndex);
     persistSession();
     saveTopicSnapshot();
     setBusy(false, "已切回题库客观题，请作答。");
