@@ -570,6 +570,15 @@ function restoreSession() {
       bankReady: Boolean(saved.bankReady),
       planningNote: saved.planningNote || ""
     });
+    const hasRestorableSurface = state.completed
+      || Boolean(state.currentQuestion)
+      || Boolean(state.awaitingNext && state.lastReview)
+      || state.questionBank.length > 0
+      || state.history.length > 0;
+    if (!hasRestorableSurface) {
+      localStorage.removeItem(STORAGE_KEY);
+      return false;
+    }
     hydrateAnsweredSnapshotFromHistory();
     if (state.awaitingNext && state.lastReview && state.lastAnsweredQuestionType === "short_answer") {
       state.lastReview = sanitizeSubjectiveReview(state.lastReview, state.lastAnsweredQuestion || state.currentQuestion, state.lastAnsweredAnswer);
@@ -675,6 +684,19 @@ function questionMetaTitle() {
     return "回顾状态";
   }
   return "准备状态";
+}
+
+function sessionTitleText() {
+  if (!state.topic) {
+    return "准备开始";
+  }
+  if (state.completed) {
+    return state.mastered ? `已掌握：${state.topic}` : `已结束：${state.topic}`;
+  }
+  if (state.currentQuestion || state.awaitingNext) {
+    return `正在回顾：${state.topic}`;
+  }
+  return `正在准备：${state.topic}`;
 }
 
 function objectiveStats() {
@@ -806,6 +828,7 @@ function renderBankProgress({ title = "", detail = "", currentIndex = -1, comple
 
 function setQuestionPlaceholder(message) {
   questionText.textContent = message;
+  setSessionLabels();
 }
 
 function hideBankProgress() {
@@ -815,6 +838,7 @@ function hideBankProgress() {
 function setBusy(isBusy, message = "") {
   state.busy = isBusy;
   statusText.textContent = message;
+  answerForm.hidden = !state.currentQuestion;
   questionMetaLabel.textContent = questionMetaTitle();
   questionTypeLabel.textContent = questionStatusLabel();
   topicInput.disabled = isBusy;
@@ -848,7 +872,7 @@ function setSessionLabels() {
   topicLabel.textContent = state.topic || "未开始";
   roundLabel.textContent = String(state.history.length);
   stageLabel.textContent = state.currentStage || "-";
-  sessionTitle.textContent = state.topic ? `正在回顾：${state.topic}` : "准备开始";
+  sessionTitle.textContent = sessionTitleText();
   historyCount.textContent = `${state.history.length} 条`;
   const stats = objectiveStats();
   const totalTarget = Math.max(state.questionBank.length || OBJECTIVE_TARGET, OBJECTIVE_TARGET);
