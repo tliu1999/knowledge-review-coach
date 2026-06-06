@@ -415,9 +415,13 @@ function hydrateAnsweredSnapshotFromHistory() {
   state.lastReview = state.lastReview || evaluation;
   state.lastAnsweredQuestion = state.lastAnsweredQuestion || evaluation.answeredQuestion || lastHistoryItem?.question || "";
   state.lastAnsweredAnswer = state.lastAnsweredAnswer || evaluation.answeredAnswer || lastHistoryItem?.answer || "";
+  const bankSnapshot = state.questionBank.find((question) => question.question === state.lastAnsweredQuestion) || null;
 
   if (answeredType) {
     state.lastAnsweredQuestionType = answeredType;
+  }
+  if (!state.lastAnsweredOptions.length && bankSnapshot?.options?.length) {
+    state.lastAnsweredOptions = bankSnapshot.options.map((option) => ({ id: option.id, text: option.text }));
   }
   if (!state.lastAnsweredOptions.length && explanations.length) {
     state.lastAnsweredOptions = explanations
@@ -428,7 +432,9 @@ function hydrateAnsweredSnapshotFromHistory() {
     const correctIds = evaluation.answerComparison?.correctIds;
     state.lastAnsweredCorrectAnswer = Array.isArray(correctIds) && correctIds.length
       ? correctIds
-      : explanations.filter((item) => item.isCorrect).map((item) => item.id).filter(Boolean);
+      : bankSnapshot?.correctAnswer?.length
+        ? [...bankSnapshot.correctAnswer]
+        : explanations.filter((item) => item.isCorrect).map((item) => item.id).filter(Boolean);
   }
   if (!state.lastAnsweredSelectedAnswerIds.length) {
     const selectedIds = evaluation.answerComparison?.selectedIds;
@@ -1232,12 +1238,12 @@ function syncBankProgressFromBank() {
   }
   state.bankProgress = state.coveragePlan.map((aspect) => {
     const count = questionCountForAspect(aspect);
-      return {
-        aspect,
-        status: count >= BANK_QUESTIONS_PER_ASPECT ? "done" : count > 0 ? "partial" : "pending",
-        count
-      };
-    });
+    return {
+      aspect,
+      status: count >= BANK_QUESTIONS_PER_ASPECT ? "done" : count > 0 ? "partial" : "pending",
+      count
+    };
+  });
 }
 
 function weakAspectFromHistory() {
@@ -1584,6 +1590,37 @@ function evaluateObjectiveAnswer(question, answerIds) {
   };
 }
 
+function objectiveMasteryReached(latestReview) {
+  const snapshot = masterySnapshot();
+  const latest = latestReview || state.history.at(-1)?.evaluation || {};
+  const hasOpenRisk = Boolean(latest.needsVerification)
+    || (latest.errorPoints || []).length > 0
+    || (latest.missingPoints || []).length > 1;
+  const totalTarget = Math.max(state.questionBank.length || OBJECTIVE_TARGET, OBJECTIVE_TARGET);
+  const requiredAspects = Math.max(state.coveragePlan.length || CONTENT_ASPECT_TARGET, CONTENT_ASPECT_TARGET);
+  const enoughObjective = snapshot.stats.count >= totalTarget;
+  const enoughAccuracy = snapshot.stats.accuracy >= 85;
+  const enoughAspectCount = snapshot.aspects.filter((item) => item.count >= STAGE_TARGET).length;
+  const enoughAspects = enoughAspectCount >= requiredAspects;
+  const stableRecent = snapshot.recentScores.length >= 3
+    && snapshot.recentAverage >= 85
+    && !snapshot.hasLowRecent;
+  return enoughObjective && enoughAccuracy && enoughAspects && stableRecent && !hasOpenRisk;
+}
+
+function applyObjectiveMastery(review) {
+  if (!objectiveMasteryReached(review)) {
+    return review;
+  }
+  return {
+    ...review,
+    mastered: true,
+    nextQuestion: "",
+    nextQuestionReason: "",
+    masterySummary: review.masterySummary || `你已经完成 ${objectiveStats().count} 道客观题，覆盖 ${state.coveragePlan.length || CONTENT_ASPECT_TARGET} 个内容方面，客观题正确率达到 ${objectiveStats().accuracy}%，可以结束本轮复习。`
+  };
+}
+
 async function refineObjectiveFeedback(review, question, answerIds, answeredQuestion) {
   if (review.objectiveCorrect) {
     return;
@@ -1753,23 +1790,27 @@ async function submitAnswer(answer) {
       state.lastAnsweredCorrectAnswer = [...state.currentCorrectAnswer];
       state.lastAnsweredSelectedAnswerIds = [...answerIds];
       state.history.push({ question, answer: displayAnswer, evaluation: review });
-      state.lastReview = review;
-      state.pendingReview = review;
+      const finalReview = applyObjectiveMastery(review);
+      state.history[state.history.length - 1].evaluation = finalReview;
+      state.lastReview = finalReview;
+      state.pendingReview = finalReview;
       state.awaitingNext = true;
       state.followupOpen = false;
       state.followupMessages = [];
       state.objectiveFeedbackKey = "";
-      state.mastered = false;
+      state.mastered = finalReview.mastered;
       followupPanel.hidden = true;
       renderOptions();
-      renderFeedback(review);
+      renderFeedback(finalReview);
       renderHistory();
       persistSession();
       saveTopicSnapshot();
-      setBusy(false, review.objectiveCorrect
-        ? `已显示解析。点击“下一题”继续，或点击“结束回顾”。${masteryStatusSentence()}`
-        : `已显示基础解析，正在用模型补充精准错误点 / 遗漏点...${masteryStatusSentence()}`);
-      refineObjectiveFeedback(review, bankQuestion, answerIds, question);
+      setBusy(false, finalReview.mastered
+        ? `已达到掌握标准，可以结束回顾。${masteryStatusSentence()}`
+        : finalReview.objectiveCorrect
+          ? `已显示解析。点击“下一题”继续，或点击“结束回顾”。${masteryStatusSentence()}`
+          : `已显示基础解析，正在用模型补充精准错误点 / 遗漏点...${masteryStatusSentence()}`);
+      refineObjectiveFeedback(finalReview, bankQuestion, answerIds, question);
       return;
     }
 
@@ -1841,16 +1882,20 @@ async function requestQuestionMode(mode, message) {
     state.lastAnsweredCorrectAnswer = [...state.currentCorrectAnswer];
     state.lastAnsweredSelectedAnswerIds = [];
     state.history.push({ question: state.currentQuestion, answer: "我不会", evaluation: review });
-    state.lastReview = review;
-    state.pendingReview = review;
+    const finalReview = applyObjectiveMastery(review);
+    state.history[state.history.length - 1].evaluation = finalReview;
+    state.lastReview = finalReview;
+    state.pendingReview = finalReview;
     state.awaitingNext = true;
     renderOptions();
-    renderFeedback(review);
+    renderFeedback(finalReview);
     renderHistory();
     persistSession();
     saveTopicSnapshot();
-    setBusy(false, `已显示基础解析，正在用模型补充精准错误点 / 遗漏点...${masteryStatusSentence()}`);
-    refineObjectiveFeedback(review, bankQuestion, [], state.currentQuestion);
+    setBusy(false, finalReview.mastered
+      ? `已达到掌握标准，可以结束回顾。${masteryStatusSentence()}`
+      : `已显示基础解析，正在用模型补充精准错误点 / 遗漏点...${masteryStatusSentence()}`);
+    refineObjectiveFeedback(finalReview, bankQuestion, [], state.currentQuestion);
     return;
   }
   if (mode === "newQuestion" && state.questionIndex < state.questionBank.length - 1) {
@@ -1858,6 +1903,22 @@ async function requestQuestionMode(mode, message) {
     persistSession();
     saveTopicSnapshot();
     setBusy(false, "已从题库换到下一题。");
+    return;
+  }
+  if (mode === "newQuestion" && state.questionBank.length) {
+    try {
+      const added = await supplementQuestionBank();
+      if (added && state.questionIndex < state.questionBank.length - 1) {
+        applyBankQuestion(state.questionBank[state.questionIndex + 1], state.questionIndex + 1);
+        persistSession();
+        saveTopicSnapshot();
+        setBusy(false, "已补充题库并换到下一题。");
+        return;
+      }
+      setBusy(false, "当前题库暂时没有补到不相似新题。可以继续回答当前题，或结束回顾。");
+    } catch (error) {
+      setBusy(false, `补题失败：${error.message}`);
+    }
     return;
   }
   setBusy(true, message);
