@@ -54,6 +54,7 @@ const objectiveLabel = document.querySelector("#objectiveLabel");
 const sessionTitle = document.querySelector("#sessionTitle");
 const resetBtn = document.querySelector("#resetBtn");
 const questionText = document.querySelector("#questionText");
+const questionMetaLabel = document.querySelector("#questionMetaLabel");
 const questionTypeLabel = document.querySelector("#questionTypeLabel");
 const answerForm = document.querySelector("#answerForm");
 const optionList = document.querySelector("#optionList");
@@ -365,7 +366,8 @@ function prepareSessionSwitch(topic, message) {
   historyList.replaceChildren();
   optionList.replaceChildren();
   optionList.hidden = true;
-  answerInput.hidden = false;
+  answerForm.hidden = true;
+  answerInput.hidden = true;
   answerInput.value = "";
   scoreLabel.textContent = "-";
   topicInput.value = topic;
@@ -646,6 +648,35 @@ function questionTypeName(type) {
   }[type] || "简答题";
 }
 
+function questionStatusLabel() {
+  if (state.currentQuestion) {
+    return questionTypeName(state.currentQuestionType);
+  }
+  if (state.busy) {
+    return "准备中";
+  }
+  if (state.completed) {
+    return state.mastered ? "已掌握" : "已结束";
+  }
+  if (state.topic) {
+    return "准备中";
+  }
+  return "未开始";
+}
+
+function questionMetaTitle() {
+  if (state.currentQuestion) {
+    return "当前问题";
+  }
+  if (state.busy || state.topic && !state.completed) {
+    return "准备状态";
+  }
+  if (state.completed) {
+    return "回顾状态";
+  }
+  return "准备状态";
+}
+
 function objectiveStats() {
   const objective = state.history.filter((item) => ["true_false", "single_choice", "multiple_choice"].includes(item.evaluation?.answeredQuestionType || item.evaluation?.questionType));
   const correct = objective.filter((item) => item.evaluation?.objectiveCorrect).length;
@@ -784,6 +815,8 @@ function hideBankProgress() {
 function setBusy(isBusy, message = "") {
   state.busy = isBusy;
   statusText.textContent = message;
+  questionMetaLabel.textContent = questionMetaTitle();
+  questionTypeLabel.textContent = questionStatusLabel();
   topicInput.disabled = isBusy;
   answerInput.disabled = isBusy || state.followupOpen || !state.currentQuestion || state.completed || state.awaitingNext || isObjectiveQuestion();
   submitAnswerBtn.disabled = isBusy || state.followupOpen || !state.currentQuestion || state.completed || state.awaitingNext || !hasAnswer();
@@ -811,6 +844,7 @@ function setBusy(isBusy, message = "") {
 
 function setSessionLabels() {
   normalizeCurrentQuestionState();
+  questionMetaLabel.textContent = questionMetaTitle();
   topicLabel.textContent = state.topic || "未开始";
   roundLabel.textContent = String(state.history.length);
   stageLabel.textContent = state.currentStage || "-";
@@ -819,7 +853,7 @@ function setSessionLabels() {
   const stats = objectiveStats();
   const totalTarget = Math.max(state.questionBank.length || OBJECTIVE_TARGET, OBJECTIVE_TARGET);
   objectiveLabel.textContent = `${stats.count}/${totalTarget} · ${stats.accuracy}%`;
-  questionTypeLabel.textContent = questionTypeName(state.currentQuestionType);
+  questionTypeLabel.textContent = questionStatusLabel();
   subjectiveBtn.textContent = isObjectiveQuestion() ? "主观题" : "客观题";
 }
 
@@ -1040,11 +1074,13 @@ function renderOptionAnalysis(review) {
 
 function renderOptions() {
   normalizeCurrentQuestionState();
-  const objective = Boolean(state.currentQuestion) && isObjectiveQuestion();
+  const hasQuestion = Boolean(state.currentQuestion);
+  const objective = hasQuestion && isObjectiveQuestion();
+  answerForm.hidden = !hasQuestion;
   optionList.hidden = !objective;
-  answerInput.hidden = objective;
+  answerInput.hidden = !hasQuestion || objective;
 
-  if (!objective) {
+  if (!hasQuestion || !objective) {
     optionList.replaceChildren();
     return;
   }
@@ -2274,7 +2310,8 @@ function resetSession() {
   answerInput.value = "";
   optionList.replaceChildren();
   optionList.hidden = true;
-  answerInput.hidden = false;
+  answerForm.hidden = true;
+  answerInput.hidden = true;
   questionText.textContent = "输入一个知识点后，我会先问第一题。";
   feedbackPanel.hidden = true;
   followupPanel.hidden = true;

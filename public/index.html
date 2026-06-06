@@ -94,13 +94,13 @@
 
         <section class="question-card" aria-live="polite">
           <div class="question-meta">
-            <p class="card-label">当前问题</p>
-            <span id="questionTypeLabel">简答题</span>
+            <p id="questionMetaLabel" class="card-label">准备状态</p>
+            <span id="questionTypeLabel">未开始</span>
           </div>
           <h3 id="questionText">输入一个知识点后，我会先问第一题。</h3>
         </section>
 
-        <form id="answerForm" class="answer-form" autocomplete="off">
+        <form id="answerForm" class="answer-form" autocomplete="off" hidden>
           <label for="answerInput">你的回答</label>
           <div id="optionList" class="option-list" hidden></div>
           <textarea id="answerInput" name="answer" placeholder="先按自己的理解回答，不用追求完美。" disabled></textarea>
