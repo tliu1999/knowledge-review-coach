@@ -296,6 +296,40 @@ function buildObjectiveFeedbackMessages(payload) {
   ];
 }
 
+function buildWeakFocusMessages(payload) {
+  const signals = payload.focusSignals && typeof payload.focusSignals === "object" ? payload.focusSignals : {};
+  return [
+    {
+      role: "system",
+      content: [
+        "你是严谨的学习诊断助手。",
+        "任务是根据结构化复习历史，总结真正需要重点回顾的薄弱概念和优先级。",
+        "不要简单复述单题错误点；要综合错题、低分内容方面、遗漏点、混淆点和下次判断策略，归纳成可用于重新生成重点题库的内容方面。",
+        "薄弱内容方面必须具体到知识点内的概念、机制、条件、边界、对比对象或典型应用，不要使用“定义/机制/应用/误区”这类空泛标签。",
+        "不要编造历史中没有依据的薄弱点；如果证据不足，要说明优先补基础覆盖。",
+        "必须输出严格 JSON，不要 Markdown。"
+      ].join("\n")
+    },
+    {
+      role: "user",
+      content: [
+        `知识点：${payload.topic}`,
+        "结构化历史信号：",
+        JSON.stringify(signals, null, 2).slice(0, 18000),
+        "",
+        "请按 JSON 输出：",
+        "{",
+        '  "summary": "一句话概括学习者当前最主要薄弱点",',
+        '  "aspects": ["优先重点回顾的具体内容方面"],',
+        '  "stages": ["相关学习阶段"],',
+        '  "notes": ["归纳后的薄弱概念、混淆点或判断条件"],',
+        '  "priorities": [{"aspect": "具体内容方面", "reason": "为什么优先", "priority": 1}]',
+        "}"
+      ].join("\n")
+    }
+  ];
+}
+
 function parseModelJson(content) {
   try {
     return JSON.parse(content);
@@ -311,6 +345,8 @@ function parseModelJson(content) {
 function buildRepairJsonMessages(content, mode) {
   const expectedShape = mode === "bankQuestions"
     ? '{ "questions": [ { "questionType": "single_choice", "question": "...", "options": [{"id":"A","text":"..."}], "correctAnswer": ["A"], "stage": "定义", "knowledgeAspect": "...", "focusSubpoint": "...", "basis": ["..."], "questionAnalysis": "...", "optionExplanations": [{"id":"A","explanation":"..."}] } ] }'
+    : mode === "weakFocus"
+    ? '{ "summary": "...", "aspects": ["..."], "stages": ["..."], "notes": ["..."], "priorities": [{"aspect": "...", "reason": "...", "priority": 1}] }'
     : '{ "contentAspects": [{"aspect": "...", "subpoints": ["..."]}], "coveragePlan": ["..."], "planningNote": "..." }';
   return [
     {
@@ -1017,6 +1053,24 @@ function normalizeObjectiveFeedback(raw) {
   };
 }
 
+function normalizeWeakFocus(raw) {
+  const priorities = Array.isArray(raw.priorities)
+    ? raw.priorities.slice(0, 8).map((item, index) => ({
+      aspect: String(item.aspect || "").trim(),
+      reason: currentQuestionText(item.reason || ""),
+      priority: Number(item.priority || index + 1)
+    })).filter((item) => item.aspect || item.reason)
+    : [];
+  return {
+    mode: "weak",
+    summary: currentQuestionText(raw.summary || "重点回顾历史错题、低分内容方面和遗漏点。"),
+    aspects: currentQuestionList(raw.aspects).slice(0, 10),
+    stages: currentQuestionList(raw.stages).slice(0, 6),
+    notes: currentQuestionList(raw.notes).slice(0, 12),
+    priorities
+  };
+}
+
 function ensureObjectiveQuestion(review, payload) {
   if (payload.mode !== "objective" || OBJECTIVE_TYPES.includes(review.questionType)) {
     return review;
@@ -1073,7 +1127,7 @@ async function parseModelJsonWithRepair(content, payload) {
   try {
     return parseModelJson(content);
   } catch (error) {
-    if (!["bankPlan", "bankExpandPlan", "bankQuestions"].includes(payload.mode)) {
+    if (!["bankPlan", "bankExpandPlan", "bankQuestions", "weakFocus"].includes(payload.mode)) {
       throw error;
     }
     try {
@@ -1123,6 +1177,17 @@ async function callDeepSeek(payload) {
         nextTimeStrategy: ""
       };
     }
+    if (payload.mode === "weakFocus") {
+      return {
+        configurationMissing: true,
+        mode: "weak",
+        summary: "还没有配置 DeepSeek API Key，无法归纳薄弱点。",
+        aspects: [],
+        stages: [],
+        notes: [],
+        priorities: []
+      };
+    }
     return {
       configurationMissing: true,
       mastered: false,
@@ -1166,6 +1231,8 @@ async function callDeepSeek(payload) {
       ? buildBankQuestionsMessages(payload)
     : payload.mode === "objectiveFeedback"
       ? buildObjectiveFeedbackMessages(payload)
+    : payload.mode === "weakFocus"
+      ? buildWeakFocusMessages(payload)
       : buildMessages(payload);
 
   const content = await requestDeepSeekJson(messages);
@@ -1178,6 +1245,9 @@ async function callDeepSeek(payload) {
   }
   if (payload.mode === "objectiveFeedback") {
     return normalizeObjectiveFeedback(parsed);
+  }
+  if (payload.mode === "weakFocus") {
+    return normalizeWeakFocus(parsed);
   }
   const review = ensureObjectiveQuestion(scoreObjectiveAnswer(normalizeReview(parsed), payload), payload);
   return applyMasteryGate(review, payload);
@@ -1211,7 +1281,7 @@ const server = createServer(async (request, response) => {
   if (request.method === "POST" && request.url === "/api/review") {
     try {
       const payload = await readRequestJson(request);
-      if (!payload.topic || !["start", "answer", "explain", "newQuestion", "followup", "subjective", "objective", "bankPlan", "bankExpandPlan", "bankQuestions", "objectiveFeedback"].includes(payload.mode)) {
+      if (!payload.topic || !["start", "answer", "explain", "newQuestion", "followup", "subjective", "objective", "bankPlan", "bankExpandPlan", "bankQuestions", "objectiveFeedback", "weakFocus"].includes(payload.mode)) {
         sendJson(response, 400, { error: "BAD_REQUEST" });
         return;
       }

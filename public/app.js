@@ -193,6 +193,75 @@ function weakFocusFromRecord(record) {
   };
 }
 
+function weakFocusSignalsFromRecord(record) {
+  const history = Array.isArray(record.history) ? record.history : [];
+  const weakItems = history.filter((item) => {
+    const evaluation = item.evaluation || {};
+    return Number(evaluation.score || 0) < 85
+      || evaluation.objectiveCorrect === false
+      || evaluation.needsVerification
+      || (evaluation.errorPoints || []).length > 0
+      || (evaluation.missingPoints || []).length > 0;
+  });
+  const aspectStats = {};
+  for (const item of history) {
+    const evaluation = item.evaluation || {};
+    const aspect = evaluation.knowledgeAspect || "未标注内容方面";
+    if (!aspectStats[aspect]) {
+      aspectStats[aspect] = { total: 0, weak: 0, scores: [] };
+    }
+    aspectStats[aspect].total += 1;
+    aspectStats[aspect].scores.push(Number(evaluation.score || 0));
+    if (Number(evaluation.score || 0) < 85 || evaluation.objectiveCorrect === false || (evaluation.errorPoints || []).length || (evaluation.missingPoints || []).length) {
+      aspectStats[aspect].weak += 1;
+    }
+  }
+  return {
+    topic: record.topic,
+    overall: {
+      rounds: record.stats?.rounds || history.length,
+      objectiveCount: record.stats?.objectiveCount || 0,
+      objectiveAccuracy: record.stats?.objectiveAccuracy || 0,
+      averageScore: record.stats?.averageScore || 0
+    },
+    aspectStats: Object.entries(aspectStats).map(([aspect, stats]) => ({
+      aspect,
+      total: stats.total,
+      weak: stats.weak,
+      averageScore: stats.scores.length ? Math.round(stats.scores.reduce((sum, score) => sum + score, 0) / stats.scores.length) : 0
+    })).sort((a, b) => b.weak - a.weak || a.averageScore - b.averageScore).slice(0, 12),
+    weakItems: weakItems.slice(-16).map((item) => {
+      const evaluation = item.evaluation || {};
+      return {
+        question: item.question || evaluation.question || "",
+        answer: item.answer || evaluation.answeredAnswer || "",
+        score: Number(evaluation.score || 0),
+        objectiveCorrect: evaluation.objectiveCorrect,
+        questionType: evaluation.answeredQuestionType || evaluation.questionType || "",
+        stage: evaluation.stage || "",
+        knowledgeAspect: evaluation.knowledgeAspect || "",
+        focusSubpoint: evaluation.focusSubpoint || "",
+        errorPoints: (evaluation.errorPoints || []).slice(0, 3),
+        missingPoints: (evaluation.missingPoints || []).slice(0, 3),
+        gaps: (evaluation.gaps || []).slice(0, 3),
+        nextTimeStrategy: evaluation.nextTimeStrategy || ""
+      };
+    })
+  };
+}
+
+function normalizeWeakFocus(focus, fallback) {
+  const source = focus && typeof focus === "object" ? focus : {};
+  return {
+    mode: "weak",
+    stages: Array.isArray(source.stages) && source.stages.length ? source.stages : fallback.stages || [],
+    aspects: Array.isArray(source.aspects) && source.aspects.length ? source.aspects : fallback.aspects || [],
+    notes: Array.isArray(source.notes) && source.notes.length ? source.notes : fallback.notes || [],
+    priorities: Array.isArray(source.priorities) ? source.priorities : [],
+    summary: source.summary || fallback.summary || "重点复习历史中低分、错题、遗漏和不确定内容。"
+  };
+}
+
 function renderTopicLibrary() {
   const topics = getStoredTopics();
   topicLibraryCount.textContent = `${topics.length} 个`;
@@ -215,8 +284,19 @@ function renderTopicLibrary() {
       item.querySelector("strong").textContent = record.topic;
       item.querySelector(".topic-library-title span").textContent = record.mastered ? "已完成" : "复习中";
       item.querySelector("p").textContent = `${record.stats?.rounds || 0} 轮 · 客观题 ${record.stats?.objectiveCount || 0} 道 · 正确率 ${record.stats?.objectiveAccuracy || 0}%`;
-      item.querySelector('[data-action="weak"]').addEventListener("click", () => {
-        startSession(record.topic, { reviewMode: "weak", focus: weakFocusFromRecord(record), sourceHistory: record.history || [] });
+      item.querySelector('[data-action="weak"]').addEventListener("click", async () => {
+        const fallbackFocus = weakFocusFromRecord(record);
+        setBusy(true, "正在归纳薄弱点...");
+        try {
+          const focus = await requestReview({
+            mode: "weakFocus",
+            topic: record.topic,
+            focusSignals: weakFocusSignalsFromRecord(record)
+          });
+          startSession(record.topic, { reviewMode: "weak", focus: normalizeWeakFocus(focus, fallbackFocus), sourceHistory: record.history || [] });
+        } catch (error) {
+          startSession(record.topic, { reviewMode: "weak", focus: fallbackFocus, sourceHistory: record.history || [] });
+        }
       });
       item.querySelector('[data-action="all"]').addEventListener("click", () => {
         startSession(record.topic, { reviewMode: "all" });
