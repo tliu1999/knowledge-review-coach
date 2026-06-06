@@ -19,6 +19,7 @@ const state = {
   selectedAnswerIds: [],
   history: [],
   busy: false,
+  completed: false,
   mastered: false,
   lastReview: null,
   lastAnsweredQuestion: "",
@@ -32,6 +33,7 @@ const state = {
   followupOpen: false,
   followupMessages: [],
   objectiveFeedbackKey: "",
+  sessionVersion: 0,
   questionBank: [],
   questionIndex: 0,
   coveragePlan: [],
@@ -111,6 +113,16 @@ function saveStoredTopics(topics) {
   localStorage.setItem(TOPICS_KEY, JSON.stringify(topics));
 }
 
+function isCurrentSession(sessionVersion) {
+  return sessionVersion === state.sessionVersion;
+}
+
+function abortIfStaleSession(sessionVersion) {
+  if (!isCurrentSession(sessionVersion)) {
+    throw new Error("STALE_SESSION");
+  }
+}
+
 function statsForHistory(history) {
   const objective = history.filter((item) => ["true_false", "single_choice", "multiple_choice"].includes(item.evaluation?.answeredQuestionType || item.evaluation?.questionType));
   const correct = objective.filter((item) => item.evaluation?.objectiveCorrect).length;
@@ -145,6 +157,7 @@ function saveTopicSnapshot() {
     topic: state.topic,
     updatedAt: new Date().toISOString(),
     mastered: state.mastered,
+    completed: state.completed,
     currentStage: state.currentStage,
     currentQuestion: state.currentQuestion,
     currentQuestionType: state.currentQuestionType,
@@ -312,6 +325,57 @@ function weakFocusTargetsForAspect(focus, aspect) {
   };
 }
 
+function prepareSessionSwitch(topic, message) {
+  const sessionVersion = state.sessionVersion + 1;
+  Object.assign(state, {
+    sessionVersion,
+    topic,
+    currentQuestion: "",
+    currentStage: "",
+    currentQuestionType: "short_answer",
+    currentOptions: [],
+    currentCorrectAnswer: [],
+    selectedAnswerIds: [],
+    history: [],
+    completed: false,
+    mastered: false,
+    lastReview: null,
+    lastAnsweredQuestion: "",
+    lastAnsweredAnswer: "",
+    lastAnsweredQuestionType: "short_answer",
+    lastAnsweredOptions: [],
+    lastAnsweredCorrectAnswer: [],
+    lastAnsweredSelectedAnswerIds: [],
+    pendingReview: null,
+    awaitingNext: false,
+    followupOpen: false,
+    followupMessages: [],
+    objectiveFeedbackKey: "",
+    questionBank: [],
+    questionIndex: 0,
+    coveragePlan: [],
+    aspectSubpoints: {},
+    bankProgress: [],
+    bankReady: false,
+    planningNote: ""
+  });
+  feedbackPanel.hidden = true;
+  followupPanel.hidden = true;
+  hideBankProgress();
+  historyList.replaceChildren();
+  optionList.replaceChildren();
+  optionList.hidden = true;
+  answerInput.hidden = false;
+  answerInput.value = "";
+  scoreLabel.textContent = "-";
+  topicInput.value = topic;
+  questionText.textContent = message;
+  localStorage.removeItem(STORAGE_KEY);
+  setSessionLabels();
+  setBusy(true, message);
+  return sessionVersion;
+}
+
 function renderTopicLibrary() {
   const topics = getStoredTopics();
   topicLibraryCount.textContent = `${topics.length} 个`;
@@ -332,20 +396,40 @@ function renderTopicLibrary() {
         </div>
       `;
       item.querySelector("strong").textContent = record.topic;
-      item.querySelector(".topic-library-title span").textContent = record.mastered ? "已完成" : "复习中";
+      item.querySelector(".topic-library-title span").textContent = record.mastered
+        ? "已掌握"
+        : record.completed
+          ? "已结束"
+          : "复习中";
       item.querySelector("p").textContent = `${record.stats?.rounds || 0} 轮 · 客观题 ${record.stats?.objectiveCount || 0} 道 · 正确率 ${record.stats?.objectiveAccuracy || 0}%`;
       item.querySelector('[data-action="weak"]').addEventListener("click", async () => {
         const fallbackFocus = weakFocusFromRecord(record);
-        setBusy(true, "正在归纳薄弱点...");
+        const sessionVersion = prepareSessionSwitch(record.topic, `正在为“${record.topic}”归纳薄弱点...`);
         try {
           const focus = await requestReview({
             mode: "weakFocus",
             topic: record.topic,
             focusSignals: weakFocusSignalsFromRecord(record)
           });
-          startSession(record.topic, { reviewMode: "weak", focus: normalizeWeakFocus(focus, fallbackFocus), sourceHistory: record.history || [] });
+          abortIfStaleSession(sessionVersion);
+          startSession(record.topic, {
+            reviewMode: "weak",
+            focus: normalizeWeakFocus(focus, fallbackFocus),
+            sourceHistory: record.history || [],
+            sessionVersion,
+            reusePreparedSession: true
+          });
         } catch (error) {
-          startSession(record.topic, { reviewMode: "weak", focus: fallbackFocus, sourceHistory: record.history || [] });
+          if (error.message === "STALE_SESSION") {
+            return;
+          }
+          startSession(record.topic, {
+            reviewMode: "weak",
+            focus: fallbackFocus,
+            sourceHistory: record.history || [],
+            sessionVersion,
+            reusePreparedSession: true
+          });
         }
       });
       item.querySelector('[data-action="all"]').addEventListener("click", () => {
@@ -366,6 +450,7 @@ function persistSession() {
     currentCorrectAnswer: state.currentCorrectAnswer,
     selectedAnswerIds: state.selectedAnswerIds,
     history: state.history,
+    completed: state.completed,
     mastered: state.mastered,
     lastReview: state.lastReview,
     lastAnsweredQuestion: state.lastAnsweredQuestion,
@@ -462,6 +547,7 @@ function restoreSession() {
       currentCorrectAnswer: Array.isArray(saved.currentCorrectAnswer) ? saved.currentCorrectAnswer : [],
       selectedAnswerIds: Array.isArray(saved.selectedAnswerIds) ? saved.selectedAnswerIds : [],
       history: Array.isArray(saved.history) ? saved.history : [],
+      completed: Boolean(saved.completed || saved.mastered && !saved.currentQuestion && !saved.awaitingNext),
       mastered: Boolean(saved.mastered),
       lastReview: saved.lastReview || null,
       lastAnsweredQuestion: saved.lastAnsweredQuestion || "",
@@ -503,17 +589,24 @@ function restoreSession() {
 }
 
 function canAct() {
-  return Boolean(state.currentQuestion && !state.busy && !state.mastered && !state.awaitingNext);
+  return Boolean(state.currentQuestion && !state.busy && !state.completed && !state.awaitingNext);
+}
+
+function canRequestNewQuestion() {
+  return Boolean(state.topic
+    && !state.busy
+    && !state.completed
+    && ((state.currentQuestion && !state.awaitingNext) || (state.awaitingNext && state.questionBank.length)));
 }
 
 function canSwitchQuestionMode() {
-  const canReturnFromAnsweredSubjective = state.awaitingNext
-    && state.lastAnsweredQuestionType === "short_answer"
-    && state.questionBank.length;
+  const canSwitchFromAnsweredReview = state.awaitingNext
+    && Boolean(state.lastReview)
+    && (state.lastAnsweredQuestionType !== "short_answer" || state.questionBank.length);
   return Boolean(state.topic
     && !state.busy
-    && !state.mastered
-    && ((!state.awaitingNext && (state.currentQuestion || state.questionBank.length)) || canReturnFromAnsweredSubjective));
+    && !state.completed
+    && ((!state.awaitingNext && (state.currentQuestion || state.questionBank.length)) || canSwitchFromAnsweredReview));
 }
 
 function isObjectiveType(type) {
@@ -626,8 +719,13 @@ function masteryStatusSentence() {
   const enoughAspects = enoughAspectCount >= requiredAspects;
   const stableRecent = recentScores.length >= 3 && recentAverage >= 85 && !hasLowRecent;
   const ready = enoughObjective && enoughAccuracy && enoughAspects && stableRecent && !hasOpenRisk;
+  if (state.completed) {
+    return state.mastered || ready
+      ? "当前掌握情况：本轮回顾已结束，已达到掌握标准。"
+      : "当前掌握情况：本轮回顾已结束，尚未达到自动掌握标准。";
+  }
   if (state.mastered || ready) {
-    return "当前掌握情况：已达到掌握标准。";
+    return "当前掌握情况：已达到掌握标准，可以结束回顾，也可以继续练习。";
   }
   const gaps = [];
   if (!enoughAspects) {
@@ -675,6 +773,10 @@ function renderBankProgress({ title = "", detail = "", currentIndex = -1, comple
   );
 }
 
+function setQuestionPlaceholder(message) {
+  questionText.textContent = message;
+}
+
 function hideBankProgress() {
   bankProgressPanel.hidden = true;
 }
@@ -683,19 +785,21 @@ function setBusy(isBusy, message = "") {
   state.busy = isBusy;
   statusText.textContent = message;
   topicInput.disabled = isBusy;
-  answerInput.disabled = isBusy || state.followupOpen || !state.currentQuestion || state.mastered || state.awaitingNext || isObjectiveQuestion();
-  submitAnswerBtn.disabled = isBusy || state.followupOpen || !state.currentQuestion || state.mastered || state.awaitingNext || !hasAnswer();
+  answerInput.disabled = isBusy || state.followupOpen || !state.currentQuestion || state.completed || state.awaitingNext || isObjectiveQuestion();
+  submitAnswerBtn.disabled = isBusy || state.followupOpen || !state.currentQuestion || state.completed || state.awaitingNext || !hasAnswer();
   optionList.querySelectorAll("button").forEach((button) => {
-    button.disabled = isBusy || state.followupOpen || state.mastered || state.awaitingNext;
+    button.disabled = isBusy || state.followupOpen || state.completed || state.awaitingNext;
   });
   const totalTarget = Math.max(state.coveragePlan.length * BANK_QUESTIONS_PER_ASPECT, OBJECTIVE_TARGET);
   const hasNextQuestion = state.questionIndex < state.questionBank.length - 1;
-  const canSupplementBank = Boolean(state.topic && state.coveragePlan.length && state.questionBank.length < totalTarget);
-  nextQuestionBtn.disabled = isBusy || !state.awaitingNext || state.mastered || (!hasNextQuestion && !canSupplementBank);
-  endReviewBtn.disabled = isBusy || !state.topic || state.history.length === 0;
+  const canSupplementBank = Boolean(state.topic
+    && state.coveragePlan.length
+    && (state.questionBank.length < totalTarget || state.mastered));
+  nextQuestionBtn.disabled = isBusy || !state.awaitingNext || state.completed || (!hasNextQuestion && !canSupplementBank);
+  endReviewBtn.disabled = isBusy || state.completed || !state.topic || state.history.length === 0;
   dontKnowBtn.disabled = state.followupOpen || !canAct();
-  newQuestionBtn.disabled = state.followupOpen || !canAct();
-  followupBtn.disabled = isBusy || state.followupOpen || !state.awaitingNext || !state.lastReview;
+  newQuestionBtn.disabled = state.followupOpen || !canRequestNewQuestion();
+  followupBtn.disabled = isBusy || state.followupOpen || state.completed || !state.awaitingNext || !state.lastReview;
   subjectiveBtn.disabled = !canSwitchQuestionMode();
   if (followupInput) {
     followupInput.disabled = isBusy;
@@ -1011,13 +1115,17 @@ function renderHistory() {
 }
 
 function renderRestoredSession() {
-  if (state.questionBank.length && !state.awaitingNext && !state.mastered) {
+  if (state.questionBank.length && !state.awaitingNext && !state.completed) {
     const current = bankQuestionAt() || state.questionBank[0];
     applyBankQuestion(current, state.questionBank[state.questionIndex] ? state.questionIndex : 0);
   }
   normalizeCurrentQuestionState();
   topicInput.value = state.topic;
-  questionText.textContent = state.currentQuestion || (state.mastered ? "这一知识点已达到当前掌握标准。" : "输入一个知识点后，我会先问第一题。");
+  questionText.textContent = state.currentQuestion || (state.mastered
+    ? "这一知识点已达到当前掌握标准。"
+    : state.completed
+      ? `“${state.topic}”本轮回顾已结束。`
+      : "输入一个知识点后，我会先问第一题。");
   renderOptions();
   if (state.awaitingNext && state.lastReview) {
     restoreAnsweredQuestionView();
@@ -1052,6 +1160,7 @@ async function requestReview(payload) {
 
 function applyReviewToQuestion(review) {
   state.awaitingNext = false;
+  state.completed = false;
   state.pendingReview = null;
   state.followupOpen = false;
   state.followupMessages = [];
@@ -1069,12 +1178,12 @@ function applyReviewToQuestion(review) {
   state.currentCorrectAnswer = Array.isArray(review.correctAnswer) ? review.correctAnswer : [];
   state.selectedAnswerIds = [];
   normalizeCurrentQuestionState();
-  state.mastered = review.mastered;
-  state.currentQuestion = review.mastered ? "" : (review.question || review.nextQuestion);
+  state.mastered = state.mastered || review.mastered;
+  state.currentQuestion = review.question || review.nextQuestion || "";
   state.lastReview = review;
-  questionText.textContent = review.mastered
-    ? "这一知识点已达到当前掌握标准。"
-    : review.question || review.nextQuestion || "模型没有返回下一题，请重新开始或换一个知识点。";
+  questionText.textContent = review.question || review.nextQuestion || (state.mastered
+    ? "已达到掌握标准。可以结束回顾，也可以继续练习。"
+    : "模型没有返回下一题，请重新开始或换一个知识点。");
   answerInput.value = "";
   renderOptions();
   setSessionLabels();
@@ -1094,6 +1203,7 @@ function applyBankQuestion(question, index = state.questionIndex) {
   }
   state.questionIndex = index;
   state.awaitingNext = false;
+  state.completed = false;
   state.pendingReview = null;
   state.followupOpen = false;
   state.followupMessages = [];
@@ -1111,7 +1221,6 @@ function applyBankQuestion(question, index = state.questionIndex) {
   state.selectedAnswerIds = [];
   state.currentQuestion = question.question;
   state.lastReview = null;
-  state.mastered = false;
   answerInput.value = "";
   questionText.textContent = question.question;
   feedbackPanel.hidden = true;
@@ -1291,7 +1400,7 @@ function mergeExpandedCoverage(plan) {
   return newAspects;
 }
 
-async function expandCoveragePlanForSupplement() {
+async function expandCoveragePlanForSupplement(sessionVersion = state.sessionVersion) {
   const message = "已有内容方面暂时补不到不相似新题，正在扩展新的知识点内容方面...";
   setBusy(true, message);
   renderBankProgress({
@@ -1307,14 +1416,16 @@ async function expandCoveragePlanForSupplement() {
     existingQuestions: state.questionBank.map((item) => item.question).slice(-80),
     history: state.history
   });
+  abortIfStaleSession(sessionVersion);
   return mergeExpandedCoverage(plan);
 }
 
-async function supplementQuestionBank() {
+async function supplementQuestionBank(sessionVersion = state.sessionVersion) {
   let totalTarget = Math.max(state.coveragePlan.length * BANK_QUESTIONS_PER_ASPECT, OBJECTIVE_TARGET);
   if (!state.topic || !state.coveragePlan.length) {
     return 0;
   }
+  abortIfStaleSession(sessionVersion);
   syncBankProgressFromBank();
   let addedCount = 0;
   for (let expansionRound = 0; expansionRound < 2 && addedCount === 0; expansionRound += 1) {
@@ -1359,6 +1470,7 @@ async function supplementQuestionBank() {
         existingSubpoints: existingForAspect.map((item) => item.focusSubpoint).filter(Boolean),
         existingQuestions: state.questionBank.map((item) => item.question).slice(-80)
       });
+      abortIfStaleSession(sessionVersion);
       const questions = Array.isArray(result.questions) ? result.questions.map(normalizeClientBankQuestion) : [];
       const diverseQuestions = filterDiverseQuestions(
         questions,
@@ -1381,7 +1493,8 @@ async function supplementQuestionBank() {
       }
     }
     if (addedCount === 0) {
-      const expanded = await expandCoveragePlanForSupplement();
+      const expanded = await expandCoveragePlanForSupplement(sessionVersion);
+      abortIfStaleSession(sessionVersion);
       if (!expanded.length) {
         break;
       }
@@ -1392,6 +1505,7 @@ async function supplementQuestionBank() {
 }
 
 async function generateQuestionBank(topic, options = {}) {
+  const sessionVersion = options.sessionVersion ?? state.sessionVersion;
   setBusy(true, "正在规划题库内容方面...");
   renderBankProgress({
     title: "正在规划题库内容方面",
@@ -1405,6 +1519,7 @@ async function generateQuestionBank(topic, options = {}) {
     focus: options.focus || null,
     sourceHistory: options.sourceHistory || []
   });
+  abortIfStaleSession(sessionVersion);
   state.coveragePlan = Array.isArray(plan.coveragePlan) ? plan.coveragePlan : [];
   state.aspectSubpoints = plan.aspectSubpoints && typeof plan.aspectSubpoints === "object" ? plan.aspectSubpoints : {};
   state.planningNote = plan.planningNote || "";
@@ -1445,6 +1560,7 @@ async function generateQuestionBank(topic, options = {}) {
         existingSubpoints: aspectQuestions.map((item) => item.focusSubpoint).filter(Boolean),
         existingQuestions: [...bank, ...aspectQuestions].map((item) => item.question).slice(-60)
       });
+      abortIfStaleSession(sessionVersion);
       const questions = Array.isArray(result.questions) ? result.questions.map(normalizeClientBankQuestion) : [];
       const diverseQuestions = filterDiverseQuestions(
         questions,
@@ -1482,6 +1598,7 @@ async function generateQuestionBank(topic, options = {}) {
         existingSubpoints: aspectQuestions.map((item) => item.focusSubpoint).filter(Boolean),
         existingQuestions: [...bank, ...aspectQuestions].map((item) => item.question).slice(-60)
       });
+      abortIfStaleSession(sessionVersion);
       const questions = Array.isArray(result.questions) ? result.questions.map(normalizeClientBankQuestion) : [];
       aspectQuestions.push(...filterDiverseQuestions(
         questions,
@@ -1621,8 +1738,11 @@ function applyObjectiveMastery(review) {
   };
 }
 
-async function refineObjectiveFeedback(review, question, answerIds, answeredQuestion) {
+async function refineObjectiveFeedback(review, question, answerIds, answeredQuestion, sessionVersion = state.sessionVersion) {
   if (review.objectiveCorrect) {
+    return;
+  }
+  if (!isCurrentSession(sessionVersion)) {
     return;
   }
   const feedbackKey = [
@@ -1656,7 +1776,7 @@ async function refineObjectiveFeedback(review, question, answerIds, answeredQues
       basis: question.basis || review.basis || [],
       optionExplanations: question.optionExplanations || review.optionExplanations || []
     });
-    if (!state.awaitingNext || state.lastAnsweredQuestion !== answeredQuestion || state.lastReview !== review) {
+    if (!isCurrentSession(sessionVersion) || !state.awaitingNext || state.lastAnsweredQuestion !== answeredQuestion || state.lastReview !== review) {
       return;
     }
     const nextReview = {
@@ -1679,7 +1799,7 @@ async function refineObjectiveFeedback(review, question, answerIds, answeredQues
     saveTopicSnapshot();
     setBusy(false, `已补充更精准的错误点 / 遗漏点。${masteryStatusSentence()}`);
   } catch (error) {
-    if (state.awaitingNext && state.lastAnsweredQuestion === answeredQuestion && state.lastReview === review) {
+    if (isCurrentSession(sessionVersion) && state.awaitingNext && state.lastAnsweredQuestion === answeredQuestion && state.lastReview === review) {
       const fallbackReview = {
         ...review,
         objectiveFeedbackPending: false,
@@ -1706,51 +1826,26 @@ async function refineObjectiveFeedback(review, question, answerIds, answeredQues
 }
 
 async function startSession(topic, options = {}) {
-  Object.assign(state, {
-    topic,
-    currentQuestion: "",
-    currentStage: "",
-    currentQuestionType: "short_answer",
-    currentOptions: [],
-    currentCorrectAnswer: [],
-    selectedAnswerIds: [],
-    history: [],
-    mastered: false,
-    lastReview: null,
-    lastAnsweredQuestion: "",
-    lastAnsweredAnswer: "",
-    lastAnsweredQuestionType: "short_answer",
-    lastAnsweredOptions: [],
-    lastAnsweredCorrectAnswer: [],
-    lastAnsweredSelectedAnswerIds: [],
-    pendingReview: null,
-    awaitingNext: false,
-    followupOpen: false,
-    followupMessages: [],
-    objectiveFeedbackKey: "",
-    questionBank: [],
-    questionIndex: 0,
-    coveragePlan: [],
-    aspectSubpoints: {},
-    bankProgress: [],
-    bankReady: false,
-    planningNote: ""
-  });
-  feedbackPanel.hidden = true;
-  followupPanel.hidden = true;
-  hideBankProgress();
-  historyList.replaceChildren();
-  scoreLabel.textContent = "-";
-  setSessionLabels();
+  const sessionVersion = options.reusePreparedSession
+    ? options.sessionVersion ?? state.sessionVersion
+    : prepareSessionSwitch(topic, "正在生成完整题库...");
+  abortIfStaleSession(sessionVersion);
+  setQuestionPlaceholder(options.reviewMode === "weak"
+    ? `正在为“${topic}”生成重点回顾题库...`
+    : `正在为“${topic}”生成完整题库...`);
   setBusy(true, "正在生成完整题库...");
 
   try {
-    const bank = await generateQuestionBank(topic, options);
+    const bank = await generateQuestionBank(topic, { ...options, sessionVersion });
+    abortIfStaleSession(sessionVersion);
     applyBankQuestion(bank[0], 0);
     persistSession();
     saveTopicSnapshot();
     setBusy(false, `题库已生成 ${bank.length} 道客观题，覆盖 ${state.coveragePlan.length} 个内容方面。请回答当前问题。`);
   } catch (error) {
+    if (error.message === "STALE_SESSION") {
+      return;
+    }
     questionText.textContent = "生成题库失败，请检查服务端日志和 DeepSeek 配置。";
     renderBankProgress({
       title: "题库生成失败",
@@ -1762,9 +1857,10 @@ async function startSession(topic, options = {}) {
 }
 
 async function submitAnswer(answer) {
-  if (state.busy || state.awaitingNext) {
+  if (state.busy || state.completed || state.awaitingNext) {
     return;
   }
+  const sessionVersion = state.sessionVersion;
   const question = state.currentQuestion;
   const answerIds = [...state.selectedAnswerIds];
   const displayAnswer = isObjectiveQuestion() ? answerIds.join("、") : answer;
@@ -1798,6 +1894,7 @@ async function submitAnswer(answer) {
       state.followupOpen = false;
       state.followupMessages = [];
       state.objectiveFeedbackKey = "";
+      state.completed = false;
       state.mastered = finalReview.mastered;
       followupPanel.hidden = true;
       renderOptions();
@@ -1806,11 +1903,11 @@ async function submitAnswer(answer) {
       persistSession();
       saveTopicSnapshot();
       setBusy(false, finalReview.mastered
-        ? `已达到掌握标准，可以结束回顾。${masteryStatusSentence()}`
+        ? `已达到掌握标准。可以结束回顾，也可以继续练习。${masteryStatusSentence()}`
         : finalReview.objectiveCorrect
           ? `已显示解析。点击“下一题”继续，或点击“结束回顾”。${masteryStatusSentence()}`
           : `已显示基础解析，正在用模型补充精准错误点 / 遗漏点...${masteryStatusSentence()}`);
-      refineObjectiveFeedback(finalReview, bankQuestion, answerIds, question);
+      refineObjectiveFeedback(finalReview, bankQuestion, answerIds, question, sessionVersion);
       return;
     }
 
@@ -1825,6 +1922,7 @@ async function submitAnswer(answer) {
       answer: displayAnswer,
       history: state.history
     });
+    abortIfStaleSession(sessionVersion);
     const review = sanitizeSubjectiveReview(rawReview, question, displayAnswer);
 
     review.answeredQuestion = question;
@@ -1841,7 +1939,8 @@ async function submitAnswer(answer) {
     state.awaitingNext = true;
     state.followupOpen = false;
     state.followupMessages = [];
-    state.mastered = review.mastered;
+    state.completed = false;
+    state.mastered = state.mastered || review.mastered;
     followupPanel.hidden = true;
     renderOptions();
     renderFeedback(review);
@@ -1850,17 +1949,21 @@ async function submitAnswer(answer) {
     saveTopicSnapshot();
     const masterySentence = masteryStatusSentence();
     setBusy(false, review.mastered
-      ? `已达到掌握标准，可以结束回顾。${masterySentence}`
+      ? `已达到掌握标准。可以结束回顾，也可以继续练习。${masterySentence}`
       : `已显示解析。点击“下一题”继续，或点击“结束回顾”。${masterySentence}`);
   } catch (error) {
+    if (error.message === "STALE_SESSION") {
+      return;
+    }
     setBusy(false, error.message);
   }
 }
 
 async function requestQuestionMode(mode, message) {
-  if (!canAct()) {
+  if (mode === "newQuestion" ? !canRequestNewQuestion() : !canAct()) {
     return;
   }
+  const sessionVersion = state.sessionVersion;
   if (mode === "explain" && isObjectiveQuestion()) {
     const bankQuestion = bankQuestionAt() || {
       question: state.currentQuestion,
@@ -1893,9 +1996,9 @@ async function requestQuestionMode(mode, message) {
     persistSession();
     saveTopicSnapshot();
     setBusy(false, finalReview.mastered
-      ? `已达到掌握标准，可以结束回顾。${masteryStatusSentence()}`
+      ? `已达到掌握标准。可以结束回顾，也可以继续练习。${masteryStatusSentence()}`
       : `已显示基础解析，正在用模型补充精准错误点 / 遗漏点...${masteryStatusSentence()}`);
-    refineObjectiveFeedback(finalReview, bankQuestion, [], state.currentQuestion);
+    refineObjectiveFeedback(finalReview, bankQuestion, [], state.currentQuestion, sessionVersion);
     return;
   }
   if (mode === "newQuestion" && state.questionIndex < state.questionBank.length - 1) {
@@ -1907,7 +2010,8 @@ async function requestQuestionMode(mode, message) {
   }
   if (mode === "newQuestion" && state.questionBank.length) {
     try {
-      const added = await supplementQuestionBank();
+      const added = await supplementQuestionBank(sessionVersion);
+      abortIfStaleSession(sessionVersion);
       if (added && state.questionIndex < state.questionBank.length - 1) {
         applyBankQuestion(state.questionBank[state.questionIndex + 1], state.questionIndex + 1);
         persistSession();
@@ -1917,6 +2021,9 @@ async function requestQuestionMode(mode, message) {
       }
       setBusy(false, "当前题库暂时没有补到不相似新题。可以继续回答当前题，或结束回顾。");
     } catch (error) {
+      if (error.message === "STALE_SESSION") {
+        return;
+      }
       setBusy(false, `补题失败：${error.message}`);
     }
     return;
@@ -1934,6 +2041,7 @@ async function requestQuestionMode(mode, message) {
       correctAnswer: state.currentCorrectAnswer,
       history: state.history
     });
+    abortIfStaleSession(sessionVersion);
     applyReviewToQuestion(review);
     feedbackPanel.hidden = true;
     persistSession();
@@ -1941,6 +2049,9 @@ async function requestQuestionMode(mode, message) {
     setBusy(false, "已更新当前问题。");
     answerInput.focus();
   } catch (error) {
+    if (error.message === "STALE_SESSION") {
+      return;
+    }
     setBusy(false, error.message);
   }
 }
@@ -1949,6 +2060,7 @@ async function requestSubjectiveQuestion() {
   if (!canSwitchQuestionMode()) {
     return;
   }
+  const sessionVersion = state.sessionVersion;
   setBusy(true, "正在生成主观题...");
   try {
     const review = await requestReview({
@@ -1959,6 +2071,7 @@ async function requestSubjectiveQuestion() {
       questionType: "short_answer",
       history: state.history
     });
+    abortIfStaleSession(sessionVersion);
     applyReviewToQuestion(sanitizeSubjectiveReview(review, review.question || review.nextQuestion || ""));
     feedbackPanel.hidden = true;
     persistSession();
@@ -1966,6 +2079,9 @@ async function requestSubjectiveQuestion() {
     setBusy(false, "请回答主观题。");
     answerInput.focus();
   } catch (error) {
+    if (error.message === "STALE_SESSION") {
+      return;
+    }
     setBusy(false, error.message);
   }
 }
@@ -1996,9 +2112,10 @@ function toggleQuestionMode() {
 }
 
 async function askFollowupQuestion(question) {
-  if (!state.awaitingNext || !state.lastReview || state.busy) {
+  if (state.completed || !state.awaitingNext || !state.lastReview || state.busy) {
     return;
   }
+  const sessionVersion = state.sessionVersion;
   state.followupMessages = [{ role: "user", content: question }];
   renderFollowupMessages();
   followupInput.value = "";
@@ -2024,6 +2141,7 @@ async function askFollowupQuestion(question) {
       },
       history: state.history
     });
+    abortIfStaleSession(sessionVersion);
     const answer = review.followupAnswer || review.explanation || review.questionAnalysis || "这次追问没有返回有效回答，请换一种问法再试。";
     state.followupMessages = [
       { role: "user", content: question },
@@ -2033,6 +2151,9 @@ async function askFollowupQuestion(question) {
     persistSession();
     setBusy(false, "追问已回答。可以继续提问，也可以直接点“下一题”。");
   } catch (error) {
+    if (error.message === "STALE_SESSION") {
+      return;
+    }
     state.followupMessages = [
       { role: "user", content: question },
       { role: "assistant", content: `追问回答失败：${error.message}` }
@@ -2043,12 +2164,14 @@ async function askFollowupQuestion(question) {
 }
 
 async function goToNextQuestion() {
-  if (!state.awaitingNext) {
+  if (state.completed || !state.awaitingNext) {
     return;
   }
+  const sessionVersion = state.sessionVersion;
   if (state.questionIndex >= state.questionBank.length - 1) {
     try {
-      const added = await supplementQuestionBank();
+      const added = await supplementQuestionBank(sessionVersion);
+      abortIfStaleSession(sessionVersion);
       if (!added) {
         const message = "当前题库已没有可用下一题，且暂时没有补到不相似新题。可以结束回顾，或重新开始生成题库。";
         persistSession();
@@ -2061,6 +2184,9 @@ async function goToNextQuestion() {
         return;
       }
     } catch (error) {
+      if (error.message === "STALE_SESSION") {
+        return;
+      }
       const message = `补充下一题失败：${error.message}`;
       persistSession();
       renderBankProgress({
@@ -2082,7 +2208,7 @@ function endReview() {
   if (!state.topic) {
     return;
   }
-  state.mastered = true;
+  state.completed = true;
   state.awaitingNext = false;
   state.pendingReview = null;
   state.currentQuestion = "";
@@ -2096,18 +2222,22 @@ function endReview() {
   state.lastAnsweredOptions = [];
   state.lastAnsweredCorrectAnswer = [];
   state.lastAnsweredSelectedAnswerIds = [];
-  questionText.textContent = `“${state.topic}”本轮回顾已结束。`;
+  questionText.textContent = state.mastered
+    ? `“${state.topic}”已达到掌握标准，本轮回顾已结束。`
+    : `“${state.topic}”本轮回顾已结束，尚未达到自动掌握标准。`;
   renderOptions();
   followupPanel.hidden = true;
   hideBankProgress();
   persistSession();
   saveTopicSnapshot();
   setSessionLabels();
-  setBusy(false, "本轮回顾已结束。");
+  setBusy(false, state.mastered ? "本轮回顾已结束，已达到掌握标准。" : "本轮回顾已结束，尚未达到自动掌握标准。");
 }
 
 function resetSession() {
+  const sessionVersion = state.sessionVersion + 1;
   Object.assign(state, {
+    sessionVersion,
     topic: "",
     currentQuestion: "",
     currentStage: "",
@@ -2117,6 +2247,7 @@ function resetSession() {
     selectedAnswerIds: [],
     history: [],
     busy: false,
+    completed: false,
     mastered: false,
     lastReview: null,
     lastAnsweredQuestion: "",
