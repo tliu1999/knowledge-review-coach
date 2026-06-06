@@ -305,6 +305,7 @@ function buildWeakFocusMessages(payload) {
         "你是严谨的学习诊断助手。",
         "任务是根据结构化复习历史，总结真正需要重点回顾的薄弱概念和优先级。",
         "不要简单复述单题错误点；要综合错题、低分内容方面、遗漏点、混淆点和下次判断策略，归纳成可用于重新生成重点题库的内容方面。",
+        "必须按内容方面和 focusSubpoint 归纳，明确每个薄弱内容方面应该重点覆盖哪些 targetSubpoints，以及常见 misconceptions。",
         "薄弱内容方面必须具体到知识点内的概念、机制、条件、边界、对比对象或典型应用，不要使用“定义/机制/应用/误区”这类空泛标签。",
         "不要编造历史中没有依据的薄弱点；如果证据不足，要说明优先补基础覆盖。",
         "必须输出严格 JSON，不要 Markdown。"
@@ -323,7 +324,10 @@ function buildWeakFocusMessages(payload) {
         '  "aspects": ["优先重点回顾的具体内容方面"],',
         '  "stages": ["相关学习阶段"],',
         '  "notes": ["归纳后的薄弱概念、混淆点或判断条件"],',
-        '  "priorities": [{"aspect": "具体内容方面", "reason": "为什么优先", "priority": 1}]',
+        '  "priorities": [{"aspect": "具体内容方面", "reason": "为什么优先", "priority": 1}],',
+        '  "targetSubpoints": {"具体内容方面": ["应优先出题的具体子点"]},',
+        '  "misconceptions": {"具体内容方面": ["常见混淆或错误判断"]},',
+        '  "questionStrategies": {"具体内容方面": "该方面重点回顾题应如何覆盖子点、混淆点和变式"}',
         "}"
       ].join("\n")
     }
@@ -346,7 +350,7 @@ function buildRepairJsonMessages(content, mode) {
   const expectedShape = mode === "bankQuestions"
     ? '{ "questions": [ { "questionType": "single_choice", "question": "...", "options": [{"id":"A","text":"..."}], "correctAnswer": ["A"], "stage": "定义", "knowledgeAspect": "...", "focusSubpoint": "...", "basis": ["..."], "questionAnalysis": "...", "optionExplanations": [{"id":"A","explanation":"..."}] } ] }'
     : mode === "weakFocus"
-    ? '{ "summary": "...", "aspects": ["..."], "stages": ["..."], "notes": ["..."], "priorities": [{"aspect": "...", "reason": "...", "priority": 1}] }'
+    ? '{ "summary": "...", "aspects": ["..."], "stages": ["..."], "notes": ["..."], "priorities": [{"aspect": "...", "reason": "...", "priority": 1}], "targetSubpoints": {"aspect": ["subpoint"]}, "misconceptions": {"aspect": ["misconception"]}, "questionStrategies": {"aspect": "..."} }'
     : '{ "contentAspects": [{"aspect": "...", "subpoints": ["..."]}], "coveragePlan": ["..."], "planningNote": "..." }';
   return [
     {
@@ -448,8 +452,12 @@ function buildBankExpandPlanMessages(payload) {
 function buildBankQuestionsMessages(payload) {
   const existingQuestions = asList(payload.existingQuestions, 40).map((item, index) => `${index + 1}. ${item}`).join("\n");
   const subpoints = asList(payload.subpointsForAspect, 20);
+  const targetSubpoints = asList(payload.targetSubpoints, 20);
+  const misconceptions = asList(payload.misconceptions, 20);
+  const questionStrategy = currentQuestionText(payload.questionStrategy || "");
   const usedSubpoints = new Set(asList(payload.existingSubpoints, 40));
-  const availableSubpoints = subpoints.filter((item) => !usedSubpoints.has(item));
+  const subpointPool = targetSubpoints.length ? targetSubpoints : subpoints;
+  const availableSubpoints = subpointPool.filter((item) => !usedSubpoints.has(item));
   const aspectIndex = Number(payload.aspectIndex || 0) + 1;
   const questionCount = Math.max(1, Math.min(BANK_QUESTIONS_PER_ASPECT, Number(payload.questionCount || BANK_QUESTIONS_PER_BATCH)));
   const system = [
@@ -457,6 +465,8 @@ function buildBankQuestionsMessages(payload) {
     "任务是围绕指定知识点和指定内容方面生成客观题。",
     "题目必须考察具体概念、结构、过程、条件、对比、边界或应用判断，不能是空泛模板题。",
     "同一批题必须覆盖该内容方面内不同子点，不得只是替换措辞或重复同一判断。",
+    "如果提供了 targetSubpoints，必须优先围绕 targetSubpoints 出题；如果数量不足，再补充该内容方面完整子点清单中的其他子点。",
+    "如果提供了 misconceptions，题目和干扰项要有意识地检验这些混淆点，但不得直接照抄历史错题。",
     "每道题必须绑定一个 focusSubpoint；同一内容方面内不得重复使用同一个 focusSubpoint，除非所有子点都已经用完。",
     "题型只能是 true_false、single_choice、multiple_choice。",
     "true_false 必须给 A 正确、B 错误两个选项。",
@@ -473,6 +483,9 @@ function buildBankQuestionsMessages(payload) {
     `内容方面 ${aspectIndex}/${BANK_ASPECT_COUNT}：${payload.aspect}`,
     `完整内容方面清单：${asList(payload.coveragePlan, 16).join("、")}`,
     subpoints.length ? `该内容方面完整子点清单：${subpoints.join("、")}` : "",
+    targetSubpoints.length ? `重点回顾 targetSubpoints，必须优先覆盖：${targetSubpoints.join("、")}` : "",
+    misconceptions.length ? `重点回顾 misconceptions，干扰项和辨析要覆盖：${misconceptions.join("；")}` : "",
+    questionStrategy ? `重点回顾出题策略：${questionStrategy}` : "",
     availableSubpoints.length ? `本批优先使用尚未覆盖子点：${availableSubpoints.join("、")}` : "",
     usedSubpoints.size ? `已经覆盖过的子点，避免重复：${[...usedSubpoints].join("、")}` : "",
     existingQuestions ? `已生成题目，禁止重复或高度相似：\n${existingQuestions}` : "已生成题目：无",
@@ -480,7 +493,7 @@ function buildBankQuestionsMessages(payload) {
     "题型分布建议：判断题、单选题、多选题都要有；多选题必须有至少两个正确选项。",
     "每题字段要求：",
     "- knowledgeAspect 必须等于当前内容方面。",
-    "- focusSubpoint 必须来自该内容方面子点清单，表示本题具体考察的子点。",
+    "- focusSubpoint 必须优先来自 targetSubpoints；没有 targetSubpoints 时，来自该内容方面子点清单。",
     "- question 必须包含具体知识内容，不能出现“某阶段”“需要区分核心原理、适用边界和常见误区”等泛化句式。",
     "- basis 写 1-2 条本题判分所需的概念依据。",
     "- questionAnalysis 写本题考察的重点、关键辨析和易错点。",
@@ -1053,6 +1066,26 @@ function normalizeObjectiveFeedback(raw) {
   };
 }
 
+function normalizeStringListMap(value, limit = 10) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, list]) => [
+    String(key || "").trim(),
+    currentQuestionList(list).slice(0, limit)
+  ]).filter(([key, list]) => key && list.length));
+}
+
+function normalizeStringMap(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, text]) => [
+    String(key || "").trim(),
+    currentQuestionText(text)
+  ]).filter(([key, text]) => key && text));
+}
+
 function normalizeWeakFocus(raw) {
   const priorities = Array.isArray(raw.priorities)
     ? raw.priorities.slice(0, 8).map((item, index) => ({
@@ -1067,7 +1100,10 @@ function normalizeWeakFocus(raw) {
     aspects: currentQuestionList(raw.aspects).slice(0, 10),
     stages: currentQuestionList(raw.stages).slice(0, 6),
     notes: currentQuestionList(raw.notes).slice(0, 12),
-    priorities
+    priorities,
+    targetSubpoints: normalizeStringListMap(raw.targetSubpoints, 12),
+    misconceptions: normalizeStringListMap(raw.misconceptions, 12),
+    questionStrategies: normalizeStringMap(raw.questionStrategies)
   };
 }
 
@@ -1185,7 +1221,10 @@ async function callDeepSeek(payload) {
         aspects: [],
         stages: [],
         notes: [],
-        priorities: []
+        priorities: [],
+        targetSubpoints: {},
+        misconceptions: {},
+        questionStrategies: {}
       };
     }
     return {

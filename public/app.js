@@ -187,6 +187,9 @@ function weakFocusFromRecord(record) {
     stages: weakStages,
     aspects: weakAspects,
     notes: weakNotes,
+    targetSubpoints: {},
+    misconceptions: {},
+    questionStrategies: {},
     summary: weakNotes.length
       ? `重点复习：${weakNotes.join("；")}`
       : "重点复习历史中低分、错题、遗漏和不确定内容。"
@@ -204,16 +207,40 @@ function weakFocusSignalsFromRecord(record) {
       || (evaluation.missingPoints || []).length > 0;
   });
   const aspectStats = {};
+  const subpointStats = {};
   for (const item of history) {
     const evaluation = item.evaluation || {};
     const aspect = evaluation.knowledgeAspect || "未标注内容方面";
+    const subpoint = evaluation.focusSubpoint || "未标注子点";
     if (!aspectStats[aspect]) {
       aspectStats[aspect] = { total: 0, weak: 0, scores: [] };
     }
+    const subpointKey = `${aspect}|||${subpoint}`;
+    if (!subpointStats[subpointKey]) {
+      subpointStats[subpointKey] = {
+        aspect,
+        focusSubpoint: subpoint,
+        total: 0,
+        weak: 0,
+        scores: [],
+        misconceptions: [],
+        sampleQuestions: []
+      };
+    }
     aspectStats[aspect].total += 1;
     aspectStats[aspect].scores.push(Number(evaluation.score || 0));
+    subpointStats[subpointKey].total += 1;
+    subpointStats[subpointKey].scores.push(Number(evaluation.score || 0));
     if (Number(evaluation.score || 0) < 85 || evaluation.objectiveCorrect === false || (evaluation.errorPoints || []).length || (evaluation.missingPoints || []).length) {
       aspectStats[aspect].weak += 1;
+      subpointStats[subpointKey].weak += 1;
+      subpointStats[subpointKey].misconceptions.push(
+        ...(evaluation.errorPoints || []),
+        ...(evaluation.missingPoints || []),
+        ...(evaluation.gaps || []),
+        evaluation.nextTimeStrategy || ""
+      );
+      subpointStats[subpointKey].sampleQuestions.push(item.question || evaluation.question || "");
     }
   }
   return {
@@ -230,6 +257,15 @@ function weakFocusSignalsFromRecord(record) {
       weak: stats.weak,
       averageScore: stats.scores.length ? Math.round(stats.scores.reduce((sum, score) => sum + score, 0) / stats.scores.length) : 0
     })).sort((a, b) => b.weak - a.weak || a.averageScore - b.averageScore).slice(0, 12),
+    subpointStats: Object.values(subpointStats).map((stats) => ({
+      aspect: stats.aspect,
+      focusSubpoint: stats.focusSubpoint,
+      total: stats.total,
+      weak: stats.weak,
+      averageScore: stats.scores.length ? Math.round(stats.scores.reduce((sum, score) => sum + score, 0) / stats.scores.length) : 0,
+      misconceptions: [...new Set(stats.misconceptions.filter(Boolean))].slice(0, 6),
+      sampleQuestions: [...new Set(stats.sampleQuestions.filter(Boolean))].slice(0, 3)
+    })).filter((item) => item.weak > 0).sort((a, b) => b.weak - a.weak || a.averageScore - b.averageScore).slice(0, 24),
     weakItems: weakItems.slice(-16).map((item) => {
       const evaluation = item.evaluation || {};
       return {
@@ -258,7 +294,21 @@ function normalizeWeakFocus(focus, fallback) {
     aspects: Array.isArray(source.aspects) && source.aspects.length ? source.aspects : fallback.aspects || [],
     notes: Array.isArray(source.notes) && source.notes.length ? source.notes : fallback.notes || [],
     priorities: Array.isArray(source.priorities) ? source.priorities : [],
+    targetSubpoints: source.targetSubpoints && typeof source.targetSubpoints === "object" ? source.targetSubpoints : fallback.targetSubpoints || {},
+    misconceptions: source.misconceptions && typeof source.misconceptions === "object" ? source.misconceptions : fallback.misconceptions || {},
+    questionStrategies: source.questionStrategies && typeof source.questionStrategies === "object" ? source.questionStrategies : fallback.questionStrategies || {},
     summary: source.summary || fallback.summary || "重点复习历史中低分、错题、遗漏和不确定内容。"
+  };
+}
+
+function weakFocusTargetsForAspect(focus, aspect) {
+  if (!focus || typeof focus !== "object") {
+    return { targetSubpoints: [], misconceptions: [], questionStrategy: "" };
+  }
+  return {
+    targetSubpoints: Array.isArray(focus.targetSubpoints?.[aspect]) ? focus.targetSubpoints[aspect] : [],
+    misconceptions: Array.isArray(focus.misconceptions?.[aspect]) ? focus.misconceptions[aspect] : [],
+    questionStrategy: typeof focus.questionStrategies?.[aspect] === "string" ? focus.questionStrategies[aspect] : ""
   };
 }
 
@@ -1361,6 +1411,7 @@ async function generateQuestionBank(topic, options = {}) {
     state.bankProgress[index] = { aspect, status: "running", count: 0 };
     const aspectQuestions = [];
     const subpointsForAspect = Array.isArray(state.aspectSubpoints[aspect]) ? state.aspectSubpoints[aspect] : [];
+    const weakTargets = weakFocusTargetsForAspect(options.focus, aspect);
     for (let offset = 0; offset < BANK_QUESTIONS_PER_ASPECT; offset += BANK_QUESTIONS_PER_BATCH) {
       const batchNumber = Math.floor(offset / BANK_QUESTIONS_PER_BATCH) + 1;
       const batchTotal = Math.ceil(BANK_QUESTIONS_PER_ASPECT / BANK_QUESTIONS_PER_BATCH);
@@ -1382,6 +1433,9 @@ async function generateQuestionBank(topic, options = {}) {
         focus: options.focus || null,
         questionCount: BANK_QUESTIONS_PER_BATCH,
         subpointsForAspect,
+        targetSubpoints: weakTargets.targetSubpoints,
+        misconceptions: weakTargets.misconceptions,
+        questionStrategy: weakTargets.questionStrategy,
         existingSubpoints: aspectQuestions.map((item) => item.focusSubpoint).filter(Boolean),
         existingQuestions: [...bank, ...aspectQuestions].map((item) => item.question).slice(-60)
       });
@@ -1416,6 +1470,9 @@ async function generateQuestionBank(topic, options = {}) {
         focus: options.focus || null,
         questionCount: needed,
         subpointsForAspect,
+        targetSubpoints: weakTargets.targetSubpoints,
+        misconceptions: weakTargets.misconceptions,
+        questionStrategy: weakTargets.questionStrategy,
         existingSubpoints: aspectQuestions.map((item) => item.focusSubpoint).filter(Boolean),
         existingQuestions: [...bank, ...aspectQuestions].map((item) => item.question).slice(-60)
       });

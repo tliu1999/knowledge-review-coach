@@ -2,6 +2,16 @@
 
 本项目最初没有启用 Git，因此早期迭代没有真实提交快照。下面的版本记录根据对话历史和当前代码状态重建，用于说明功能演进脉络；其中当前代码对应最新版本。
 
+## v1.0.18 - 重点回顾子点覆盖策略优化
+
+更新日期：2026-06-06
+
+- 重点回顾会按 `knowledgeAspect + focusSubpoint` 分组统计薄弱题，而不是只按内容方面汇总。
+- 前端结构化信号新增 `subpointStats`，包含每个薄弱子点的题量、弱项数量、平均分、混淆点和样例题。
+- `weakFocus` 模型归纳新增 `targetSubpoints`、`misconceptions` 和 `questionStrategies`。
+- 生成重点题库时，`bankQuestions` 会直接接收 targetSubpoints、misconceptions 和出题策略，优先围绕薄弱子点和混淆点出题。
+- 后端出题提示词要求重点回顾优先覆盖 targetSubpoints，并用 misconceptions 设计辨析和干扰项。
+
 ## v1.0.17 - 重点回顾薄弱点模型归纳
 
 更新日期：2026-06-06
