@@ -40,7 +40,8 @@ const state = {
   aspectSubpoints: {},
   bankProgress: [],
   bankReady: false,
-  planningNote: ""
+  planningNote: "",
+  bankReviewCardIndex: 0
 };
 
 const topicForm = document.querySelector("#topicForm");
@@ -73,6 +74,13 @@ const bankProgressCount = document.querySelector("#bankProgressCount");
 const bankProgressFill = document.querySelector("#bankProgressFill");
 const bankProgressDetail = document.querySelector("#bankProgressDetail");
 const bankProgressList = document.querySelector("#bankProgressList");
+const bankReviewDeck = document.querySelector("#bankReviewDeck");
+const bankReviewPrevBtn = document.querySelector("#bankReviewPrevBtn");
+const bankReviewNextBtn = document.querySelector("#bankReviewNextBtn");
+const bankReviewAspect = document.querySelector("#bankReviewAspect");
+const bankReviewHint = document.querySelector("#bankReviewHint");
+const bankReviewSubpoints = document.querySelector("#bankReviewSubpoints");
+const bankReviewNote = document.querySelector("#bankReviewNote");
 const feedbackPanel = document.querySelector("#feedbackPanel");
 const verdictText = document.querySelector("#verdictText");
 const feedbackScore = document.querySelector("#feedbackScore");
@@ -180,6 +188,7 @@ function saveTopicSnapshot() {
     aspectSubpoints: state.aspectSubpoints,
     bankReady: state.bankReady,
     planningNote: state.planningNote,
+    bankReviewCardIndex: state.bankReviewCardIndex,
     stats
   };
   const nextTopics = [topicRecord, ...topics.filter((item) => item.topic !== state.topic)].slice(0, 40);
@@ -358,7 +367,8 @@ function prepareSessionSwitch(topic, message) {
     aspectSubpoints: {},
     bankProgress: [],
     bankReady: false,
-    planningNote: ""
+    planningNote: "",
+    bankReviewCardIndex: 0
   });
   feedbackPanel.hidden = true;
   followupPanel.hidden = true;
@@ -470,7 +480,8 @@ function persistSession() {
     aspectSubpoints: state.aspectSubpoints,
     bankProgress: state.bankProgress,
     bankReady: state.bankReady,
-    planningNote: state.planningNote
+    planningNote: state.planningNote,
+    bankReviewCardIndex: state.bankReviewCardIndex
   }));
 }
 
@@ -568,7 +579,8 @@ function restoreSession() {
       aspectSubpoints: saved.aspectSubpoints && typeof saved.aspectSubpoints === "object" ? saved.aspectSubpoints : {},
       bankProgress: Array.isArray(saved.bankProgress) ? saved.bankProgress : [],
       bankReady: Boolean(saved.bankReady),
-      planningNote: saved.planningNote || ""
+      planningNote: saved.planningNote || "",
+      bankReviewCardIndex: Number(saved.bankReviewCardIndex || 0)
     });
     const hasRestorableSurface = state.completed
       || Boolean(state.currentQuestion)
@@ -798,6 +810,79 @@ function masteryStatusSentence() {
   return `当前掌握情况：约 ${progress}%，${gaps.join("，")}。`;
 }
 
+function compactReviewText(value, maxLength = 64) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function subpointsForReviewCard(aspect) {
+  const subpoints = Array.isArray(state.aspectSubpoints[aspect]) ? state.aspectSubpoints[aspect] : [];
+  const seen = new Set();
+  return subpoints
+    .map((item) => compactReviewText(item, 72))
+    .filter((item) => {
+      if (!item || seen.has(item)) {
+        return false;
+      }
+      seen.add(item);
+      return true;
+    })
+    .slice(0, 4);
+}
+
+function cardIndexForBankProgress(currentIndex) {
+  if (!state.coveragePlan.length) {
+    return -1;
+  }
+  if (currentIndex >= 0 && currentIndex < state.coveragePlan.length) {
+    return currentIndex;
+  }
+  const runningIndex = state.bankProgress.findIndex((item) => item.status === "running");
+  if (runningIndex >= 0) {
+    return runningIndex;
+  }
+  const pendingIndex = state.bankProgress.findIndex((item) => item.status !== "done");
+  if (pendingIndex >= 0) {
+    return pendingIndex;
+  }
+  return Math.min(Math.max(state.bankReviewCardIndex || 0, 0), state.coveragePlan.length - 1);
+}
+
+function renderBankReviewCard(currentIndex = -1) {
+  const index = cardIndexForBankProgress(currentIndex);
+  if (index < 0) {
+    bankReviewDeck.hidden = true;
+    return;
+  }
+  state.bankReviewCardIndex = index;
+  const aspect = state.coveragePlan[index];
+  const subpoints = subpointsForReviewCard(aspect);
+  const status = state.bankProgress[index]?.status || "pending";
+  const statusText = status === "done" ? "已生成" : status === "running" ? "正在生成" : status === "partial" ? "部分完成" : "排队中";
+  bankReviewDeck.hidden = false;
+  bankReviewAspect.textContent = `${index + 1}. ${aspect}`;
+  bankReviewHint.textContent = `先把这个方面当成一道判断题来想：它的核心对象、适用条件和容易混淆的边界分别是什么？`;
+  bankReviewSubpoints.replaceChildren(
+    ...(subpoints.length ? subpoints : ["这个方面的子点正在整理中，先抓住标题里的具体概念。"]).map((item) => {
+      const li = document.createElement("li");
+      li.textContent = item;
+      return li;
+    })
+  );
+  bankReviewNote.textContent = `${statusText} · ${state.planningNote || "题库会围绕这些核心方面分批覆盖。"}`;
+  bankReviewPrevBtn.disabled = state.coveragePlan.length < 2;
+  bankReviewNextBtn.disabled = state.coveragePlan.length < 2;
+}
+
+function shiftBankReviewCard(delta) {
+  if (!state.coveragePlan.length) {
+    return;
+  }
+  const total = state.coveragePlan.length;
+  state.bankReviewCardIndex = (state.bankReviewCardIndex + delta + total) % total;
+  renderBankReviewCard(state.bankReviewCardIndex);
+}
+
 function renderBankProgress({ title = "", detail = "", currentIndex = -1, completedCount = state.questionBank.length } = {}) {
   const totalTarget = Math.max(state.coveragePlan.length * BANK_QUESTIONS_PER_ASPECT, OBJECTIVE_TARGET);
   const percent = totalTarget ? Math.min(100, Math.round((completedCount / totalTarget) * 100)) : 0;
@@ -806,6 +891,7 @@ function renderBankProgress({ title = "", detail = "", currentIndex = -1, comple
   bankProgressCount.textContent = `${completedCount}/${totalTarget}`;
   bankProgressFill.style.width = `${percent}%`;
   bankProgressDetail.textContent = detail || "请稍等，题库生成完成后会自动进入第一题。";
+  renderBankReviewCard(currentIndex);
   bankProgressList.replaceChildren(
     ...state.bankProgress.map((item, index) => {
       const row = document.createElement("article");
@@ -833,6 +919,7 @@ function setQuestionPlaceholder(message) {
 
 function hideBankProgress() {
   bankProgressPanel.hidden = true;
+  bankReviewDeck.hidden = true;
 }
 
 function setBusy(isBusy, message = "") {
@@ -1583,6 +1670,7 @@ async function generateQuestionBank(topic, options = {}) {
   state.coveragePlan = Array.isArray(plan.coveragePlan) ? plan.coveragePlan : [];
   state.aspectSubpoints = plan.aspectSubpoints && typeof plan.aspectSubpoints === "object" ? plan.aspectSubpoints : {};
   state.planningNote = plan.planningNote || "";
+  state.bankReviewCardIndex = 0;
   state.bankProgress = state.coveragePlan.map((aspect) => ({ aspect, status: "pending", count: 0 }));
   if (!state.coveragePlan.length) {
     throw new Error(plan.configurationMissing ? plan.planningNote : "题库内容方面生成失败，请稍后重试。");
@@ -2327,7 +2415,8 @@ function resetSession() {
     aspectSubpoints: {},
     bankProgress: [],
     bankReady: false,
-    planningNote: ""
+    planningNote: "",
+    bankReviewCardIndex: 0
   });
   localStorage.removeItem(STORAGE_KEY);
   topicInput.value = "";
@@ -2383,6 +2472,8 @@ subjectiveBtn.addEventListener("click", toggleQuestionMode);
 nextQuestionBtn.addEventListener("click", goToNextQuestion);
 endReviewBtn.addEventListener("click", endReview);
 resetBtn.addEventListener("click", resetSession);
+bankReviewPrevBtn.addEventListener("click", () => shiftBankReviewCard(-1));
+bankReviewNextBtn.addEventListener("click", () => shiftBankReviewCard(1));
 
 followupForm.addEventListener("submit", (event) => {
   event.preventDefault();

@@ -394,6 +394,66 @@ h2 {
   line-height: 1.6;
 }
 
+.bank-review-deck {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #b9d7d3;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.bank-review-deck[hidden] {
+  display: none;
+}
+
+.bank-review-topline {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+
+.bank-review-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.bank-review-controls .icon-btn {
+  width: 32px;
+  height: 32px;
+  font-size: 22px;
+}
+
+.bank-review-deck h4 {
+  margin: 0;
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.35;
+}
+
+#bankReviewHint,
+#bankReviewNote {
+  color: #475467;
+  line-height: 1.6;
+}
+
+#bankReviewSubpoints {
+  display: grid;
+  gap: 7px;
+  padding-left: 18px;
+  color: #344054;
+  line-height: 1.55;
+}
+
+#bankReviewSubpoints li::marker {
+  color: var(--accent-strong);
+}
+
 .bank-progress-list {
   display: grid;
   gap: 8px;
