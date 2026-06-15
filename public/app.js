@@ -934,11 +934,9 @@ function setBusy(isBusy, message = "") {
   optionList.querySelectorAll("button").forEach((button) => {
     button.disabled = isBusy || state.followupOpen || state.completed || state.awaitingNext;
   });
-  const totalTarget = Math.max(state.coveragePlan.length * BANK_QUESTIONS_PER_ASPECT, OBJECTIVE_TARGET);
   const hasNextQuestion = state.questionIndex < state.questionBank.length - 1;
   const canSupplementBank = Boolean(state.topic
-    && state.coveragePlan.length
-    && (state.questionBank.length < totalTarget || state.mastered));
+    && state.coveragePlan.length);
   nextQuestionBtn.disabled = isBusy || !state.awaitingNext || state.completed || (!hasNextQuestion && !canSupplementBank);
   endReviewBtn.disabled = isBusy || state.completed || !state.topic || state.history.length === 0;
   dontKnowBtn.disabled = state.followupOpen || !canAct();
