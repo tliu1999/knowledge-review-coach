@@ -156,7 +156,12 @@ function statsForHistory(history) {
 }
 
 function saveTopicSnapshot() {
-  if (!state.topic || state.history.length === 0) {
+  const hasProgress = state.history.length > 0
+    || Boolean(state.currentQuestion)
+    || Boolean(state.awaitingNext && state.lastReview)
+    || state.questionBank.length > 0
+    || state.completed;
+  if (!state.topic || !hasProgress) {
     renderTopicLibrary();
     return;
   }
@@ -172,6 +177,7 @@ function saveTopicSnapshot() {
     currentQuestionType: state.currentQuestionType,
     currentOptions: state.currentOptions,
     currentCorrectAnswer: state.currentCorrectAnswer,
+    selectedAnswerIds: state.selectedAnswerIds,
     pendingReview: state.pendingReview,
     awaitingNext: state.awaitingNext,
     lastReview: state.lastReview,
@@ -186,6 +192,7 @@ function saveTopicSnapshot() {
     questionIndex: state.questionIndex,
     coveragePlan: state.coveragePlan,
     aspectSubpoints: state.aspectSubpoints,
+    bankProgress: state.bankProgress,
     bankReady: state.bankReady,
     planningNote: state.planningNote,
     bankReviewCardIndex: state.bankReviewCardIndex,
@@ -336,6 +343,7 @@ function weakFocusTargetsForAspect(focus, aspect) {
 }
 
 function prepareSessionSwitch(topic, message) {
+  saveTopicSnapshot();
   const sessionVersion = state.sessionVersion + 1;
   Object.assign(state, {
     sessionVersion,
@@ -388,6 +396,14 @@ function prepareSessionSwitch(topic, message) {
   return sessionVersion;
 }
 
+function topicReviewStatus(record) {
+  return record.completed ? "已结束" : "复习中";
+}
+
+function topicMasteryStatus(record) {
+  return record.mastered ? "已掌握" : "未掌握";
+}
+
 function renderTopicLibrary() {
   const topics = getStoredTopics();
   topicLibraryCount.textContent = `${topics.length} 个`;
@@ -399,21 +415,25 @@ function renderTopicLibrary() {
       item.innerHTML = `
         <div class="topic-library-title">
           <strong></strong>
-          <span></span>
+          <div class="topic-library-tags">
+            <span data-label="review"></span>
+            <span data-label="mastery"></span>
+          </div>
         </div>
         <p></p>
         <div class="topic-library-actions">
+          <button type="button" data-action="continue">继续回顾</button>
           <button type="button" data-action="weak">重点回顾</button>
           <button type="button" data-action="all">全部重来</button>
         </div>
       `;
       item.querySelector("strong").textContent = record.topic;
-      item.querySelector(".topic-library-title span").textContent = record.mastered
-        ? "已掌握"
-        : record.completed
-          ? "已结束"
-          : "复习中";
+      item.querySelector('[data-label="review"]').textContent = topicReviewStatus(record);
+      item.querySelector('[data-label="mastery"]').textContent = topicMasteryStatus(record);
       item.querySelector("p").textContent = `${record.stats?.rounds || 0} 轮 · 客观题 ${record.stats?.objectiveCount || 0} 道 · 正确率 ${record.stats?.objectiveAccuracy || 0}%`;
+      item.querySelector('[data-action="continue"]').addEventListener("click", () => {
+        continueTopicReview(record);
+      });
       item.querySelector('[data-action="weak"]').addEventListener("click", async () => {
         const fallbackFocus = weakFocusFromRecord(record);
         const sessionVersion = prepareSessionSwitch(record.topic, `正在为“${record.topic}”归纳薄弱点...`);
@@ -450,6 +470,35 @@ function renderTopicLibrary() {
       return item;
     })
   );
+}
+
+function continueTopicReview(record) {
+  saveTopicSnapshot();
+  if (!applySavedSession(record, { newSessionVersion: true })) {
+    setBusy(false, "没有找到可继续的回顾进度。可以选择全部重来。");
+    renderTopicLibrary();
+    return;
+  }
+  if (state.completed) {
+    state.completed = false;
+    state.followupOpen = false;
+    state.followupMessages = [];
+    if (!state.currentQuestion && !state.awaitingNext) {
+      const shouldShowAnsweredReview = state.lastReview && state.questionIndex >= state.questionBank.length - 1;
+      if (shouldShowAnsweredReview) {
+        state.awaitingNext = true;
+        state.pendingReview = state.lastReview;
+        hydrateAnsweredSnapshotFromHistory();
+      } else if (state.questionBank.length) {
+        state.questionIndex = Math.min(state.questionIndex + 1, state.questionBank.length - 1);
+      }
+    }
+  }
+  persistSession();
+  renderRestoredSession();
+  setBusy(false, state.awaitingNext
+    ? "已恢复到上次解析页。点击“下一题”继续。"
+    : "已恢复上次回顾进度。");
 }
 
 function persistSession() {
@@ -545,67 +594,77 @@ function hydrateAnsweredSnapshotFromHistory() {
   }
 }
 
+function applySavedSession(saved, options = {}) {
+  if (!saved?.topic) {
+    return false;
+  }
+  const sessionVersion = options.newSessionVersion ? state.sessionVersion + 1 : state.sessionVersion;
+  Object.assign(state, {
+    sessionVersion,
+    topic: saved.topic || "",
+    currentQuestion: saved.currentQuestion || "",
+    currentStage: saved.currentStage || "",
+    currentQuestionType: saved.currentQuestionType || "short_answer",
+    currentOptions: Array.isArray(saved.currentOptions) ? saved.currentOptions : [],
+    currentCorrectAnswer: Array.isArray(saved.currentCorrectAnswer) ? saved.currentCorrectAnswer : [],
+    selectedAnswerIds: Array.isArray(saved.selectedAnswerIds) ? saved.selectedAnswerIds : [],
+    history: Array.isArray(saved.history) ? saved.history : [],
+    completed: Boolean(saved.completed || saved.mastered && !saved.currentQuestion && !saved.awaitingNext),
+    mastered: Boolean(saved.mastered),
+    lastReview: saved.lastReview || null,
+    lastAnsweredQuestion: saved.lastAnsweredQuestion || "",
+    lastAnsweredAnswer: saved.lastAnsweredAnswer || "",
+    lastAnsweredQuestionType: saved.lastAnsweredQuestionType || "short_answer",
+    lastAnsweredOptions: Array.isArray(saved.lastAnsweredOptions) ? saved.lastAnsweredOptions : [],
+    lastAnsweredCorrectAnswer: Array.isArray(saved.lastAnsweredCorrectAnswer) ? saved.lastAnsweredCorrectAnswer : [],
+    lastAnsweredSelectedAnswerIds: Array.isArray(saved.lastAnsweredSelectedAnswerIds) ? saved.lastAnsweredSelectedAnswerIds : [],
+    pendingReview: saved.pendingReview || null,
+    awaitingNext: Boolean(saved.awaitingNext),
+    followupOpen: false,
+    followupMessages: Array.isArray(saved.followupMessages) ? saved.followupMessages : [],
+    objectiveFeedbackKey: "",
+    questionBank: Array.isArray(saved.questionBank) ? saved.questionBank : [],
+    questionIndex: Number(saved.questionIndex || 0),
+    coveragePlan: Array.isArray(saved.coveragePlan) ? saved.coveragePlan : [],
+    aspectSubpoints: saved.aspectSubpoints && typeof saved.aspectSubpoints === "object" ? saved.aspectSubpoints : {},
+    bankProgress: Array.isArray(saved.bankProgress) ? saved.bankProgress : [],
+    bankReady: Boolean(saved.bankReady),
+    planningNote: saved.planningNote || "",
+    bankReviewCardIndex: Number(saved.bankReviewCardIndex || 0)
+  });
+  const hasRestorableSurface = state.completed
+    || Boolean(state.currentQuestion)
+    || Boolean(state.awaitingNext && state.lastReview)
+    || state.questionBank.length > 0
+    || state.history.length > 0;
+  if (!hasRestorableSurface) {
+    return false;
+  }
+  hydrateAnsweredSnapshotFromHistory();
+  if (state.awaitingNext && state.lastReview && state.lastAnsweredQuestionType === "short_answer") {
+    state.lastReview = sanitizeSubjectiveReview(state.lastReview, state.lastAnsweredQuestion || state.currentQuestion, state.lastAnsweredAnswer);
+    state.pendingReview = state.pendingReview
+      ? sanitizeSubjectiveReview(state.pendingReview, state.lastAnsweredQuestion || state.currentQuestion, state.lastAnsweredAnswer)
+      : null;
+    state.currentQuestionType = "short_answer";
+    state.currentOptions = [];
+    state.currentCorrectAnswer = [];
+    state.selectedAnswerIds = [];
+    state.lastAnsweredOptions = [];
+    state.lastAnsweredCorrectAnswer = [];
+    state.lastAnsweredSelectedAnswerIds = [];
+  }
+  return true;
+}
+
 function restoreSession() {
   try {
     const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-    if (!saved.topic) {
-      return false;
-    }
-    Object.assign(state, {
-      topic: saved.topic || "",
-      currentQuestion: saved.currentQuestion || "",
-      currentStage: saved.currentStage || "",
-      currentQuestionType: saved.currentQuestionType || "short_answer",
-      currentOptions: Array.isArray(saved.currentOptions) ? saved.currentOptions : [],
-      currentCorrectAnswer: Array.isArray(saved.currentCorrectAnswer) ? saved.currentCorrectAnswer : [],
-      selectedAnswerIds: Array.isArray(saved.selectedAnswerIds) ? saved.selectedAnswerIds : [],
-      history: Array.isArray(saved.history) ? saved.history : [],
-      completed: Boolean(saved.completed || saved.mastered && !saved.currentQuestion && !saved.awaitingNext),
-      mastered: Boolean(saved.mastered),
-      lastReview: saved.lastReview || null,
-      lastAnsweredQuestion: saved.lastAnsweredQuestion || "",
-      lastAnsweredAnswer: saved.lastAnsweredAnswer || "",
-      lastAnsweredQuestionType: saved.lastAnsweredQuestionType || "short_answer",
-      lastAnsweredOptions: Array.isArray(saved.lastAnsweredOptions) ? saved.lastAnsweredOptions : [],
-      lastAnsweredCorrectAnswer: Array.isArray(saved.lastAnsweredCorrectAnswer) ? saved.lastAnsweredCorrectAnswer : [],
-      lastAnsweredSelectedAnswerIds: Array.isArray(saved.lastAnsweredSelectedAnswerIds) ? saved.lastAnsweredSelectedAnswerIds : [],
-      pendingReview: saved.pendingReview || null,
-      awaitingNext: Boolean(saved.awaitingNext),
-      followupOpen: false,
-      followupMessages: Array.isArray(saved.followupMessages) ? saved.followupMessages : [],
-      questionBank: Array.isArray(saved.questionBank) ? saved.questionBank : [],
-      questionIndex: Number(saved.questionIndex || 0),
-      coveragePlan: Array.isArray(saved.coveragePlan) ? saved.coveragePlan : [],
-      aspectSubpoints: saved.aspectSubpoints && typeof saved.aspectSubpoints === "object" ? saved.aspectSubpoints : {},
-      bankProgress: Array.isArray(saved.bankProgress) ? saved.bankProgress : [],
-      bankReady: Boolean(saved.bankReady),
-      planningNote: saved.planningNote || "",
-      bankReviewCardIndex: Number(saved.bankReviewCardIndex || 0)
-    });
-    const hasRestorableSurface = state.completed
-      || Boolean(state.currentQuestion)
-      || Boolean(state.awaitingNext && state.lastReview)
-      || state.questionBank.length > 0
-      || state.history.length > 0;
-    if (!hasRestorableSurface) {
+    const restored = applySavedSession(saved);
+    if (!restored) {
       localStorage.removeItem(STORAGE_KEY);
-      return false;
     }
-    hydrateAnsweredSnapshotFromHistory();
-    if (state.awaitingNext && state.lastReview && state.lastAnsweredQuestionType === "short_answer") {
-      state.lastReview = sanitizeSubjectiveReview(state.lastReview, state.lastAnsweredQuestion || state.currentQuestion, state.lastAnsweredAnswer);
-      state.pendingReview = state.pendingReview
-        ? sanitizeSubjectiveReview(state.pendingReview, state.lastAnsweredQuestion || state.currentQuestion, state.lastAnsweredAnswer)
-        : null;
-      state.currentQuestionType = "short_answer";
-      state.currentOptions = [];
-      state.currentCorrectAnswer = [];
-      state.selectedAnswerIds = [];
-      state.lastAnsweredOptions = [];
-      state.lastAnsweredCorrectAnswer = [];
-      state.lastAnsweredSelectedAnswerIds = [];
-    }
-    return true;
+    return restored;
   } catch {
     return false;
   }

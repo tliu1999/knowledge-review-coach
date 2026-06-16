@@ -215,11 +215,27 @@ input:disabled {
 }
 
 .library-head span,
-.topic-library-title span,
 .library-empty,
 .topic-library-card p {
   color: var(--muted);
   font-size: 12px;
+}
+
+.topic-library-tags {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.topic-library-tags span {
+  padding: 3px 7px;
+  border: 1px solid #d8e3e1;
+  border-radius: 999px;
+  background: #f7faf8;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .topic-library-list {
@@ -243,7 +259,7 @@ input:disabled {
 
 .topic-library-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
